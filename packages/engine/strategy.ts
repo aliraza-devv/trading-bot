@@ -326,7 +326,10 @@ function firstConfirmedAfter(swings: Swing[], limit: number): number {
  * HIGH for a short) and formed at/after the entry. The stop only ever tightens, and must stay on
  * the right side of the last close. Call at the close of a candle; the result applies from the next one.
  */
-export function trailCandidate(pos: Position, swings: Swing[], confirmedUpTo: number, lastClose: number, cfg: Config): number | null {
+export function trailCandidate(
+  pos: Pick<Position, 'trailing' | 'direction' | 'entryTime' | 'stop'>, // narrow on purpose: live.ts calls this with a real broker position
+  swings: Swing[], confirmedUpTo: number, lastClose: number, cfg: Config,
+): number | null {
   if (!pos.trailing) return null;
   const kind = pos.direction === 1 ? 'low' : 'high';
   for (let i = firstConfirmedAfter(swings, confirmedUpTo) - 1; i >= 0; i--) {

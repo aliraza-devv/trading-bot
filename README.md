@@ -9,7 +9,8 @@ Tailwind · Plotly.js. No Python.
 | Stage | State | What it does |
 |---|---|---|
 | 1 | done | Candle data route + detectors (swings, FVGs, BOS, premium/discount) charted for visual checking. |
-| **2** | **built - awaiting review** | Strategy, event-driven backtest, metrics, Web Worker, results page (chart with trades, equity curve, metrics, sortable trades table, CSV download). |
+| 2 | built | Strategy, event-driven backtest, metrics, Web Worker, results page (chart with trades, equity curve, metrics, sortable trades table, CSV download). |
+| 3 | **built - web side tested, EA not yet run in MT5** | MT5 **demo-account** bridge: live decision engine, Expert Advisor, live monitor page. See [`mt5/README.md`](mt5/README.md). |
 
 ## Run it
 
@@ -17,7 +18,7 @@ Tailwind · Plotly.js. No Python.
 npm install
 cp .env.example .env.local    # then put your Twelve Data key in it (see "Data source")
 npm run dev                   # http://localhost:3000
-npm test                      # 100+ unit tests: detectors, strategy, backtest, metrics, data layer
+npm test                      # 140 unit tests: detectors, strategy, backtest, metrics, data layer, live bridge
 ```
 
 1. Pick a date range → **Load gold data** (or **Use demo data**, synthetic and clearly labelled).
@@ -103,6 +104,7 @@ packages/engine/          pure TypeScript - no UI, no Next imports
   detectors.ts            fractal swings, FVG, BOS, EQ + premium/discount
   strategy.ts             ALL trading rules: setup filters, entry/stop, sizing, trade management, costs
   backtest.ts             event-driven loop over M15 closes carrying H1 context (no rules of its own)
+  live.ts / bridge.ts     the same rules asked "what now?" for the MT5 bridge, and its wire format
   metrics.ts              win rate, expectancy, profit factor, drawdown, R distribution
   aggregate.ts            M15 -> H1, drop bars that have not closed
   tests/                  hand-made candle fixtures, rule tests, no-lookahead tests
@@ -110,8 +112,31 @@ workers/backtest.worker.ts  runs the engine off the main thread
 lib/candles/              providers.ts, twelvedata.ts, dukascopy.ts, demo.ts, range.ts (per-month caching), store.ts, errors.ts
 lib/                      buildFigure.ts (Plotly figures), useBacktest.ts (worker hook), tradesCsv.ts
 app/api/candles/route.ts  GET /api/candles?from=YYYY-MM-DD&to=YYYY-MM-DD&source=twelvedata|dukascopy|demo
-components/               Explorer (page), ConfigForm, ResultsPanel, PlotlyChart
+components/               Explorer (page), ConfigForm, ResultsPanel, PlotlyChart, LivePanel (/live)
+app/api/bridge/           decide (EA talks here), status, control (pause), config (rules in force)
+lib/bridge/               store.ts (saved rules, pause, journal), guard.ts (localhost only)
+mt5/                      IRL_Bridge.mq5 (Expert Advisor) and its setup guide
 ```
+
+## MT5 demo bridge (stage 3)
+
+Optional: lets the same rules place orders on a **MetaTrader 5 demo account** on your own PC. Free, no server. Follow
+[`mt5/README.md`](mt5/README.md) (install MT5, compile `mt5/IRL_Bridge.mq5`, allow `http://localhost:3001`), then:
+
+```bash
+npm run bridge      # builds and serves on http://localhost:3001; the monitor is at /live
+```
+
+- `packages/engine/live.ts` answers "what should happen now?" from the closed candles plus the broker's state. It calls the **same** rule
+  functions as the backtest (no rules of its own) and keeps no state: a gap is "waiting" because no candle has touched it yet.
+  `packages/engine/bridge.ts` is the plain-text wire format (MQL5 has no JSON parser).
+- Tests replay a 3,200-candle series candle by candle and check both ways: every backtest trade was an order the live engine would have
+  rested (same entry, stop, risk), and every order it rests that price then touches IS a backtest trade; plus the trailing stop, stale
+  data, non-demo, pause, reconciliation and bid/ask conversion. Deliberately breaking `live.ts` seven ways fails the suite each time.
+- The EA is hard-locked to demo accounts and enforces its own caps (risk, lots, daily loss, stop loss on every order). Orders expire
+  after one candle, so a stopped bridge leaves nothing behind. The bridge routes answer only requests addressed to localhost and refuse
+  browser cross-site requests. Pause and the rules in force are on the `/live` page; saved rules and the decision journal live in the
+  git-ignored `live-data/` folder.
 
 ## Tuning the rules
 

@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useDeferredValue, useMemo, useRef, useState } from 'react';
 import { DEFAULT_CONFIG, validateConfig, type Config } from '@engine/config';
 import { detectAll } from '@engine/detectors';
@@ -36,6 +37,19 @@ export function Explorer() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const chartTop = useRef<HTMLDivElement>(null);
   const bt = useBacktest();
+  const [bridgeMsg, setBridgeMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  /** Hand the current rules to the MT5 bridge (it validates them again on the server). */
+  async function sendRulesToBridge() {
+    setBridgeMsg(null);
+    try {
+      const res = await fetch('/api/bridge/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+      const body = await res.json();
+      setBridgeMsg(res.ok ? { ok: true, text: 'Saved. The bridge uses these rules from its next sync.' } : { ok: false, text: body.message ?? `HTTP ${res.status}` });
+    } catch {
+      setBridgeMsg({ ok: false, text: 'Could not reach the app.' });
+    }
+  }
 
   async function load(src: Source) {
     setSource(src);
@@ -101,12 +115,15 @@ export function Explorer() {
 
   return (
     <div className="mx-auto max-w-[1500px] p-4">
-      <header className="mb-4">
-        <h1 className="text-xl font-semibold">XAUUSD IRL → ERL backtester</h1>
-        <p className="text-sm text-zinc-400">
-          Load gold data, set the rules on the left, press <b>Run backtest</b>. Every fill pays spread, slippage and commission;
-          orders are only placed from candles that have already closed.
-        </p>
+      <header className="mb-4 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h1 className="text-xl font-semibold">XAUUSD IRL → ERL backtester</h1>
+          <p className="text-sm text-zinc-400">
+            Load gold data, set the rules on the left, press <b>Run backtest</b>. Every fill pays spread, slippage and commission;
+            orders are only placed from candles that have already closed.
+          </p>
+        </div>
+        <Link href="/live" className="rounded border border-zinc-700 px-3 py-1.5 text-sm hover:bg-zinc-800">MT5 bridge · live monitor →</Link>
       </header>
 
       <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
@@ -145,6 +162,16 @@ export function Explorer() {
               <ul role="alert" className="list-disc pl-4 text-xs text-red-400">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
             )}
             {bt.state.status === 'error' && <p role="alert" className="text-xs text-red-400">{bt.state.error}</p>}
+          </section>
+
+          <section className="space-y-2">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">MT5 demo bridge</h2>
+            <button type="button" disabled={problems.length > 0} onClick={sendRulesToBridge}
+              className="w-full rounded border border-zinc-600 px-3 py-2 text-sm hover:bg-zinc-800 disabled:opacity-50">
+              Use these rules for the MT5 bridge
+            </button>
+            {bridgeMsg && <p role="status" className={`text-xs ${bridgeMsg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{bridgeMsg.text}</p>}
+            <p className="text-xs text-zinc-500">Saves the rules below for the Expert Advisor (demo account only). Test them with a backtest first.</p>
           </section>
 
           <section className="space-y-2">

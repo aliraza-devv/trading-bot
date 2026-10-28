@@ -6,3 +6,5 @@ export * from './aggregate';
 export * from './strategy';
 export * from './backtest';
 export * from './metrics';
+export * from './live';
+export * from './bridge';

@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "bridge": "next build && next start -p 3001",
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
