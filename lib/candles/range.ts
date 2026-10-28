@@ -22,8 +22,8 @@ export type FetchMonth = (startMs: number, endMs: number) => Promise<Candle[]>;
 
 export interface MonthChunk { key: string; start: number; end: number } // [start, end) in UTC
 
-/** UTC calendar months overlapping [fromMs, toMs). */
-export function monthChunks(fromMs: number, toMs: number): MonthChunk[] {
+/** UTC calendar months overlapping [fromMs, toMs). `prefix` namespaces the cache keys per provider. */
+export function monthChunks(fromMs: number, toMs: number, prefix = 'xauusd-m15'): MonthChunk[] {
   const out: MonthChunk[] = [];
   const f = new Date(fromMs);
   const y = f.getUTCFullYear();
@@ -32,7 +32,7 @@ export function monthChunks(fromMs: number, toMs: number): MonthChunk[] {
     const start = Date.UTC(y, m, 1);
     if (start >= toMs) break;
     const end = Date.UTC(y, m + 1, 1);
-    out.push({ key: `xauusd-m15-${y}-${String(m + 1).padStart(2, '0')}`, start, end });
+    out.push({ key: `${prefix}-${y}-${String(m + 1).padStart(2, '0')}`, start, end });
     m++;
   }
   return out;
@@ -41,11 +41,18 @@ export function monthChunks(fromMs: number, toMs: number): MonthChunk[] {
 export async function loadM15Range(
   fromMs: number,
   toMs: number,
-  deps: { fetchMonth: FetchMonth; store: MonthStore; nowMs?: number; liveTtlMs?: number; concurrency?: number },
+  deps: {
+    fetchMonth: FetchMonth;
+    store: MonthStore;
+    keyPrefix?: string; // per-provider cache namespace, e.g. "twelvedata-xauusd-m15"
+    nowMs?: number;
+    liveTtlMs?: number;
+    concurrency?: number;
+  },
 ): Promise<{ candles: Candle[]; fetchedMonths: string[]; cachedMonths: string[] }> {
   const now = deps.nowMs ?? Date.now();
   const ttl = deps.liveTtlMs ?? 10 * 60_000;
-  const chunks = monthChunks(fromMs, toMs);
+  const chunks = monthChunks(fromMs, toMs, deps.keyPrefix);
   const results = new Map<string, Candle[]>();
   const fetched: string[] = [];
   const cached: string[] = [];

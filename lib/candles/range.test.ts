@@ -20,6 +20,12 @@ describe('monthChunks', () => {
     expect(ch.map((c) => c.key)).toEqual(['xauusd-m15-2025-01', 'xauusd-m15-2025-02', 'xauusd-m15-2025-03']);
     expect(ch[1]).toMatchObject({ start: Date.UTC(2025, 1, 1), end: Date.UTC(2025, 2, 1) });
   });
+  it('namespaces cache keys per provider so prices from different sources never mix', () => {
+    const a = monthChunks(Date.UTC(2025, 0, 1), Date.UTC(2025, 0, 2), 'twelvedata-xauusd-m15');
+    const b = monthChunks(Date.UTC(2025, 0, 1), Date.UTC(2025, 0, 2), 'dukascopy-xauusd-m15');
+    expect(a[0].key).toBe('twelvedata-xauusd-m15-2025-01');
+    expect(a[0].key).not.toBe(b[0].key);
+  });
   it('does not include a month that starts exactly at the exclusive end', () => {
     expect(monthChunks(Date.UTC(2025, 0, 1), Date.UTC(2025, 1, 1))).toHaveLength(1);
   });

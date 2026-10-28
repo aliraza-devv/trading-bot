@@ -99,32 +99,69 @@ export interface Structure {
 }
 
 // ---------------------------------------------------------------------------------------------
-// STAGE 2 shapes - provisional, they will be finalised together with strategy.ts / backtest.ts.
+// STAGE 2: strategy, trades, backtest
 // ---------------------------------------------------------------------------------------------
 
-/** Point of interest: an FVG the strategy may trade from (IRL), with its target (ERL). */
-export interface POI {
-  timeframe: Timeframe;
-  fvgIdx: number; // index into that timeframe's fvgs
-  direction: Direction;
-  erlPrice: number; // external range liquidity target (swing of the same leg)
-}
+/** Why a fill happened. 'stop' = initial stop, 'breakeven' = stop after the partial, 'trail' = trailed stop. */
+export type FillReason = 'entry' | 'partial' | 'stop' | 'breakeven' | 'trail' | 'target' | 'end_of_data';
 
+/**
+ * One execution. `price` already includes spread + slippage. `time` is the OPEN time of the candle the
+ * fill happened in (the order inside a candle is unknown). `pnl` is the gross result of an exit fill
+ * (entry fills have 0); commission is kept separate.
+ */
 export interface Fill {
   time: number;
-  price: number; // after spread + slippage
-  fraction: number; // share of the ORIGINAL position closed here (entry = 1)
-  reason: string;
+  price: number;
+  lots: number;
+  reason: FillReason;
+  commission: number;
+  pnl: number;
 }
+
+/** A tradable fair value gap (the IRL) together with the target it is expected to run to (the ERL). */
+export interface POI {
+  timeframe: Timeframe;
+  direction: Direction;
+  fvgConfirmIdx: number; // identifies the gap within its timeframe
+  fvgTime: number; // open time of the gap's middle candle
+  confirmTime: number; // when the gap became known
+  bottom: number;
+  top: number;
+  erl: number; // external swing price on the same leg
+  erlTime: number; // pivot time of that swing
+}
+
+/** Why a touched gap did not become a trade (counted in the results). */
+export type SkipReason =
+  | 'busy' //          a position was already open (or one was opened on this candle)
+  | 'no_h1_context' // no H1 candle had closed yet
+  | 'trend' //         H1 trend not in the trade's direction
+  | 'no_range' //      H1 dealing range undefined
+  | 'zone' //          gap not in discount (long) / premium (short) of the H1 range
+  | 'no_erl' //        no confirmed external swing on the same leg yet
+  | 'erl_too_close' // external swing nearer than minErlR x risk
+  | 'session' //       touched outside the allowed session
+  | 'spread' //        modelled spread above maxSpread
+  | 'size'; //         risk distance or lot size not tradable
 
 export interface Trade {
   id: number;
   direction: Direction;
+  timeframe: Timeframe; // timeframe of the gap that was traded
   poi: POI;
+  entryIdx: number; // M15 candle index of the entry
+  exitIdx: number; // M15 candle index of the last exit
   entry: Fill;
   exits: Fill[];
-  stopLoss: number; // initial SL
-  riskPerUnit: number; // |entry - SL|
-  rMultiple: number; // net result in R, after all costs
-  pnl: number;
+  entryLevel: number; // limit price (candle/mid price scale), before costs
+  stopLoss: number; // initial stop (mid scale)
+  riskPerUnit: number; // |entryLevel - stopLoss| = 1R in price units
+  lots: number;
+  riskUsd: number; // riskPerUnit x contractSize x lots
+  rMultiple: number; // NET result in R, after spread, slippage and commission
+  pnl: number; // net USD
+  commission: number; // total USD
+  endedBy: FillReason; // reason of the last exit
+  maxFavorableR: number; // furthest price went in the trade's favour (mid scale), for tuning
 }

@@ -9,14 +9,14 @@
  * The detectors run on the FULL series; this module only crops to the visible window [lo, hi).
  */
 import type { Data, Layout } from 'plotly.js-dist-min';
-import type { Candle, Structure } from '@engine/types';
+import type { Candle, Structure, Trade } from '@engine/types';
 
 export const COLORS = {
   surface: '#1a1a19', grid: '#2c2c2a', axis: '#383835', text: '#c3c2b7', muted: '#898781',
   bull: '#3987e5', bear: '#d95926', candleUpLine: '#c3c2b7', candleDown: '#898781',
 };
 
-export interface Layers { swings: boolean; fvg: boolean; bos: boolean; pd: boolean }
+export interface Layers { swings: boolean; fvg: boolean; bos: boolean; pd: boolean; trades: boolean }
 type Trace = Record<string, unknown>;
 
 const fmt = (ms: number) => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
@@ -124,7 +124,78 @@ function addSwings(data: Trace[], s: Structure, lo: number, hi: number, pad: num
 }
 
 // ------------------------------------------------------------------------------------ figure
-export function buildFigure(c: Candle[], s: Structure, tfMs: number, lo: number, hi: number, layers: Layers, title: string, height: number) {
+// ------------------------------------------------------------------------------------ trades
+// Outcome colours are the reserved status pair (good / critical), never the bullish/bearish pair, so
+// "this trade won" is never confused with "this gap is bullish".
+export const GOOD = '#0ca30c';
+export const BAD = '#d03b3b';
+
+export interface TradeOverlay { trades: Trade[]; selectedId: number | null; finalTpR: number }
+
+const signed = (v: number, dp = 2) => (v >= 0 ? '+' : '') + v.toFixed(dp);
+
+function tradeHover(t: Trade): string {
+  const last = t.exits[t.exits.length - 1];
+  return `Trade #${t.id} ${t.direction === 1 ? 'LONG' : 'SHORT'} (${t.timeframe} gap)<br>${signed(t.rMultiple)}R net · ${t.pnl.toFixed(2)}`
+    + `<br>entry ${fmt(t.entry.time)} @ ${t.entry.price.toFixed(2)}<br>last exit ${fmt(last.time)} (${t.endedBy})`
+    + `<br>stop ${t.stopLoss.toFixed(2)} · ERL ${t.poi.erl.toFixed(2)} · best ${t.maxFavorableR.toFixed(2)}R`;
+}
+
+/** Entries, exits, stop / target lines and the entry-to-exit path. Works on either timeframe's chart. */
+function addTrades(data: Trace[], c: Candle[], tfMs: number, lo: number, hi: number, ov: TradeOverlay) {
+  const t0 = c[lo].time;
+  const t1 = c[hi - 1].time + tfMs;
+  const lastOf = (t: Trade) => t.exits[t.exits.length - 1];
+  const vis = ov.trades.filter((t) => t.entry.time <= t1 && lastOf(t).time >= t0);
+  if (!vis.length) return;
+
+  const lines = (ts: Trade[], from: (t: Trade) => number, to: (t: Trade) => number) => {
+    const x: Array<string | null> = [];
+    const y: Array<number | null> = [];
+    for (const t of ts) {
+      x.push(fmt(t.entry.time), fmt(lastOf(t).time), null);
+      y.push(from(t), to(t), null);
+    }
+    return { x, y };
+  };
+  const stopY = (t: Trade) => t.stopLoss;
+  const tpY = (t: Trade) => t.entryLevel + t.direction * ov.finalTpR * t.riskPerUnit;
+  const style = (color: string, width: number, dash?: string) => ({ color, width, dash });
+  const add = (name: string, ts: Trade[], from: (t: Trade) => number, to: (t: Trade) => number, line: object, group: string, legend: boolean) => {
+    if (ts.length) data.push({ type: 'scatter', mode: 'lines', name, legendgroup: group, showlegend: legend, line, hoverinfo: 'skip', ...lines(ts, from, to) });
+  };
+
+  const wins = vis.filter((t) => t.pnl > 0);
+  const losses = vis.filter((t) => t.pnl <= 0);
+  add('Stop loss', vis, stopY, stopY, style(BAD, 1, 'dash'), 'sl', true);
+  add('Target (final TP)', vis, tpY, tpY, style(GOOD, 1, 'dot'), 'tp', true);
+  add('Trade (win)', wins, (t) => t.entry.price, (t) => lastOf(t).price, style(GOOD, 2), 'win', true);
+  add('Trade (loss)', losses, (t) => t.entry.price, (t) => lastOf(t).price, style(BAD, 2), 'loss', true);
+
+  const sel = vis.filter((t) => t.id === ov.selectedId);
+  if (sel.length) { // the clicked trade, drawn thicker on top of everything
+    add('Selected stop', sel, stopY, stopY, style(BAD, 2.5, 'dash'), 'sel', false);
+    add('Selected target', sel, tpY, tpY, style(GOOD, 2.5, 'dot'), 'sel', false);
+    add('Selected trade', sel, (t) => t.entry.price, (t) => lastOf(t).price, style(sel[0].pnl > 0 ? GOOD : BAD, 4), 'sel', false);
+  }
+
+  data.push({
+    type: 'scatter', mode: 'markers', name: 'Entry', x: vis.map((t) => fmt(t.entry.time)), y: vis.map((t) => t.entry.price),
+    marker: { symbol: 'diamond', size: 10, color: COLORS.text, line: { color: COLORS.surface, width: 1 } },
+    text: vis.map(tradeHover), hoverinfo: 'text',
+  });
+  const exits = vis.flatMap((t) => t.exits.map((f) => ({ t, f })));
+  data.push({
+    type: 'scatter', mode: 'markers', name: 'Exit', x: exits.map((e) => fmt(e.f.time)), y: exits.map((e) => e.f.price),
+    marker: {
+      symbol: exits.map((e) => (e.f.reason === 'partial' ? 'circle' : 'x')), size: 9,
+      color: exits.map((e) => (e.f.pnl > 0 ? GOOD : BAD)), line: { color: COLORS.surface, width: 1 },
+    },
+    text: exits.map((e) => `${e.f.reason} @ ${e.f.price.toFixed(2)} (${e.f.lots} lots)<br>${tradeHover(e.t)}`), hoverinfo: 'text',
+  });
+}
+
+export function buildFigure(c: Candle[], s: Structure, tfMs: number, lo: number, hi: number, layers: Layers, title: string, height: number, overlay?: TradeOverlay) {
   const view = c.slice(lo, hi);
   const pHigh = Math.max(...view.map((x) => x.high));
   const pLow = Math.min(...view.map((x) => x.low));
@@ -143,6 +214,7 @@ export function buildFigure(c: Candle[], s: Structure, tfMs: number, lo: number,
   });
   if (layers.bos) addBos(data, c, s, lo, hi);
   if (layers.swings) addSwings(data, s, lo, hi, pad);
+  if (layers.trades && overlay) addTrades(data, c, tfMs, lo, hi, overlay);
 
   const yPad = (pHigh - pLow) * 0.05;
   const layout: Partial<Layout> = {
@@ -160,4 +232,39 @@ export function buildFigure(c: Candle[], s: Structure, tfMs: number, lo: number,
     uirevision: `${tfMs}-${lo}-${hi}`,
   };
   return { data: data as unknown as Data[], layout };
+}
+
+// ------------------------------------------------------------------------- results charts
+const small = (title: string, height: number): Partial<Layout> => ({
+  title: { text: title, x: 0, font: { size: 14, color: COLORS.text } }, height, margin: { l: 60, r: 20, t: 40, b: 40 },
+  paper_bgcolor: COLORS.surface, plot_bgcolor: COLORS.surface, font: { color: COLORS.text, size: 12 },
+  xaxis: { gridcolor: COLORS.grid, linecolor: COLORS.axis }, yaxis: { gridcolor: COLORS.grid, linecolor: COLORS.axis },
+  showlegend: false,
+});
+
+/** Realised equity after each closed trade, with the drawdown from the running peak shaded. */
+export function buildEquityFigure(eq: Array<{ time: number; equity: number }>, startEquity: number) {
+  let peak = -Infinity;
+  const peaks = eq.map((p) => (peak = Math.max(peak, p.equity)));
+  const x = eq.map((p) => fmt(p.time));
+  const data = [
+    { type: 'scatter', mode: 'lines', x, y: peaks, line: { width: 0, shape: 'hv' }, hoverinfo: 'skip' },
+    { type: 'scatter', mode: 'lines', x, y: eq.map((p) => p.equity), name: 'Equity', fill: 'tonexty', fillcolor: rgba(COLORS.bear, 0.2),
+      line: { color: COLORS.text, width: 1.5, shape: 'hv' }, hovertemplate: '%{x}<br>$%{y:,.2f}<extra></extra>' },
+  ] as unknown as Data[];
+  const layout = small('Equity (realised, after all costs) - shaded = drawdown from peak', 300);
+  layout.yaxis = { ...layout.yaxis, tickformat: '$,.0f' };
+  layout.shapes = [{ type: 'line', xref: 'paper', x0: 0, x1: 1, y0: startEquity, y1: startEquity, line: { color: COLORS.muted, width: 1, dash: 'dot' } }];
+  return { data, layout };
+}
+
+/** Histogram of trade results in R (losing bins in the critical colour, winning bins in the good one). */
+export function buildRDistFigure(bins: Array<{ label: string; from: number; to: number; count: number }>) {
+  const data = [{
+    type: 'bar', x: bins.map((b) => b.label), y: bins.map((b) => b.count),
+    marker: { color: bins.map((b) => (b.to <= 0 ? BAD : GOOD)) }, hovertemplate: '%{x} R: %{y} trades<extra></extra>',
+  }] as unknown as Data[];
+  const layout = small('Distribution of trade results (R)', 260);
+  layout.xaxis = { ...layout.xaxis, tickangle: -45, type: 'category' };
+  return { data, layout };
 }

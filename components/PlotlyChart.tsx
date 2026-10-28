@@ -17,7 +17,8 @@ const Plot = dynamic(
   { ssr: false, loading: () => <div className="p-6 text-sm text-zinc-400">Loading chart…</div> },
 );
 
-export function CandleChart({ data, layout }: { data: Data[]; layout: Partial<Layout> }) {
+/** Any Plotly figure (price chart, equity curve, histogram). */
+export function PlotlyChart({ data, layout }: { data: Data[]; layout: Partial<Layout> }) {
   return (
     <Plot
       data={data}
