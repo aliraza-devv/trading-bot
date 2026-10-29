@@ -85,6 +85,14 @@ daylight saving starts). If a different key/plan ever lacks gold the UI says so 
 data"). If you switch providers, re-check the timestamp meaning and set `TWELVEDATA_BAR_TIME=close` if candles are close-stamped:
 getting it wrong shifts every candle by one period, which is silent lookahead.
 
+**Closed-market candles are removed.** Recent Twelve Data months (checked: Sep-Oct 2026) contain filler candles while
+gold is closed: 96 on every Saturday, the rest of Friday evening and Sunday before the open, and thin ones in the daily
+break, all about $0.25 tall (a spread, not a price move). The Feb-Mar 2025 data has none. `lib/candles/marketHours.ts`
+drops every candle that opens between 17:00 and 18:00 New York time, or between Friday 17:00 and Sunday 18:00 (the
+schedule both data sets follow), each time candles are read; the cache keeps the raw data. The number removed comes back
+from `/api/candles` as `removedClosedMarket`. Your own broker's hours can differ (the MetaQuotes demo also has no gold
+candles from 20:00 to 22:00 UTC), so live results on a broker's candles will not match candle for candle.
+
 **Limits.** The free plan allows 8 requests/minute and 800/day. One month of M15 data is one request, requests are
 spaced automatically (`TWELVEDATA_CREDITS_PER_MIN`), and a single load is capped at `TWELVEDATA_MAX_DAYS` (default 180
 days, about 45 s the first time). Downloaded months are cached (memory + OS temp dir; on serverless hosting only for the

@@ -6,7 +6,9 @@
  * ProviderError on failure, then register it here. Cache keys are namespaced by `keyPrefix` so two
  * providers' prices are never mixed.
  */
+import type { Candle } from '@engine/types';
 import { fetchDukascopyMonth } from './dukascopy';
+import { dropClosedMarket } from './marketHours';
 import type { FetchMonth } from './range';
 import { twelveDataFromEnv } from './twelvedata';
 
@@ -21,6 +23,8 @@ export interface ProviderSpec {
   concurrency: number; // simultaneous month downloads
   keyPrefix: string; //   cache namespace
   fetchMonth: FetchMonth;
+  /** Removes candles that are not market prices; runs on every read, the cache keeps the raw data. */
+  clean?: (candles: Candle[]) => Candle[];
 }
 
 // Built once per server process so the Twelve Data rate limiter keeps its state between requests.
@@ -33,7 +37,7 @@ export function getProvider(id: RealSource): ProviderSpec {
   if (!twelveData) {
     const { fetchMonth, maxDays } = twelveDataFromEnv();
     // One month at a time: the throttle spaces requests to stay inside the plan's per-minute limit.
-    twelveData = { id, maxDays, concurrency: 1, keyPrefix: 'twelvedata-xauusd-m15', fetchMonth };
+    twelveData = { id, maxDays, concurrency: 1, keyPrefix: 'twelvedata-xauusd-m15', fetchMonth, clean: dropClosedMarket };
   }
   return twelveData;
 }

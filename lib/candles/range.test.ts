@@ -65,6 +65,22 @@ describe('loadM15Range', () => {
     expect(calls).toHaveLength(2); // TTL expired -> fetched again
   });
 
+  it('applies `clean` to what it returns on every read, keeps the raw months in the cache, and reports how many were removed', async () => {
+    const calls: Array<[number, number]> = [];
+    const store = memStore();
+    const dropOdd = (cs: Candle[]) => cs.filter((c) => (c.time / (6 * 3_600_000)) % 2 === 0);
+    const from = Date.UTC(2025, 0, 6);
+    const to = Date.UTC(2025, 0, 8);
+    const raw = await loadM15Range(from, to, { fetchMonth: fake(calls), store, nowMs: now });
+    const cleaned = await loadM15Range(from, to, { fetchMonth: fake(calls), store, nowMs: now, clean: dropOdd });
+    expect(calls).toHaveLength(1); // the second call came from the cache
+    expect(raw.removed).toBe(0);
+    expect(cleaned.removed).toBe(raw.candles.length - cleaned.candles.length);
+    expect(cleaned.removed).toBeGreaterThan(0);
+    expect(cleaned.candles).toEqual(dropOdd(raw.candles));
+    expect(store.data.get('xauusd-m15-2025-01')?.candles.length).toBeGreaterThan(cleaned.candles.length); // cache is raw
+  });
+
   it('returns sorted, de-duplicated candles', async () => {
     const dup: Candle = { time: Date.UTC(2025, 0, 2), open: 1, high: 1, low: 1, close: 1, volume: 1 };
     const r = await loadM15Range(Date.UTC(2025, 0, 1), Date.UTC(2025, 0, 31), {

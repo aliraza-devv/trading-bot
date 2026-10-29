@@ -57,14 +57,17 @@ export async function GET(req: NextRequest) {
   const asOf = Math.min(toMs, Date.now()); // nothing after this has closed yet
   let raw: Candle[];
   let cache = { fetchedMonths: [] as string[], cachedMonths: [] as string[] };
+  let removedClosedMarket = 0; // candles dropped because the market was closed (see lib/candles/marketHours.ts)
   try {
     if (!provider) {
       raw = demoM15(fromMs, toMs);
     } else {
       const r = await loadM15Range(fromMs, toMs, {
         fetchMonth: provider.fetchMonth, store: monthStore, keyPrefix: provider.keyPrefix, concurrency: provider.concurrency,
+        clean: provider.clean,
       });
       raw = r.candles;
+      removedClosedMarket = r.removed;
       cache = { fetchedMonths: r.fetchedMonths, cachedMonths: r.cachedMonths }; // not r itself: it also holds the candles
     }
   } catch (e) {
@@ -81,7 +84,7 @@ export async function GET(req: NextRequest) {
   const h1 = aggregateToH1(m15, asOf);
 
   return NextResponse.json(
-    { source, from: sp.get('from'), to: sp.get('to'), m15: m15.map(tuple), h1: h1.map(tuple), cache },
+    { source, from: sp.get('from'), to: sp.get('to'), m15: m15.map(tuple), h1: h1.map(tuple), cache, removedClosedMarket },
     { headers: { 'Cache-Control': 'public, max-age=300' } },
   );
 }

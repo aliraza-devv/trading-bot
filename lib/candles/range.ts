@@ -48,8 +48,10 @@ export async function loadM15Range(
     nowMs?: number;
     liveTtlMs?: number;
     concurrency?: number;
+    /** Applied to the merged range on every read; the cache keeps the raw months (see marketHours.ts). */
+    clean?: (candles: Candle[]) => Candle[];
   },
-): Promise<{ candles: Candle[]; fetchedMonths: string[]; cachedMonths: string[] }> {
+): Promise<{ candles: Candle[]; fetchedMonths: string[]; cachedMonths: string[]; removed: number }> {
   const now = deps.nowMs ?? Date.now();
   const ttl = deps.liveTtlMs ?? 10 * 60_000;
   const chunks = monthChunks(fromMs, toMs, deps.keyPrefix);
@@ -85,5 +87,6 @@ export async function loadM15Range(
   for (const ch of chunks) for (const c of results.get(ch.key) ?? []) if (c.time >= fromMs && c.time < toMs) all.push(c);
   all.sort((a, b) => a.time - b.time);
   const dedup = all.filter((c, i) => i === 0 || c.time !== all[i - 1].time);
-  return { candles: dedup, fetchedMonths: fetched, cachedMonths: cached };
+  const clean = deps.clean ? deps.clean(dedup) : dedup;
+  return { candles: clean, fetchedMonths: fetched, cachedMonths: cached, removed: dedup.length - clean.length };
 }
