@@ -4,17 +4,21 @@ This connects the web app to **MetaTrader 5** so the strategy can place orders o
 Nothing here costs money, needs a server, or touches a real account.
 
 ```
-MT5 (your PC)  --candles, positions, orders-->  web app (your PC, localhost:3001)
+MT5 (your PC)  --candles, positions, orders-->  web app (your PC), through a shared folder
 IRL_Bridge EA  <--"place / renew / cancel / move stop"--  same rules as the backtest
 ```
 
 The EA (`IRL_Bridge.mq5`) is the hands; the web app is the brain. The brain is the **same code the backtest uses**, so a setup
 that qualifies live is one the backtest would have taken (a test replays 3,200 candles to prove it).
 
-> **Status: not yet run against a real MT5.** The web side is tested (tests + a stand-in EA replaying real gold candles over HTTP).
-> The EA file itself has never been compiled or run inside MetaTrader, because MT5 is not installed on the PC where it was written.
-> Expect to possibly hit a compile error or a quirk of your broker on the first try. Run it with **DryRun = true** first (below),
-> and send me the exact text of anything that fails.
+> **Status: has run on a MetaQuotes-Demo account (2026-10-29).** The web side is tested (tests + a stand-in EA replaying real gold candles).
+> The EA compiles with 0 errors and 0 warnings. Its first attempt over MT5's WebRequest failed with error 4014 (MT5 refuses localhost), so it
+> talks to the app through a shared folder instead. In DryRun it logged the order it would place, and with DryRun off it placed that sell limit
+> on the demo account. Fills, the partial, breakeven and trailing have not been seen live yet. Run it with **DryRun = true** first (below), and
+> send me the exact text of anything that fails.
+>
+> Changing an EA input in MT5 keeps the EA's memory, so the new setting is only acted on at the next candle close (up to 15 minutes).
+> Versions from 2026-10-29 onwards re-check at once after a change.
 
 ## What you need
 
@@ -36,9 +40,11 @@ that qualifies live is one the backtest would have taken (a test replays 3,200 c
 2. Press **F4** to open MetaEditor, open `IRL_Bridge.mq5`, press **F7** (Compile). The bottom panel must say **0 errors**.
    Warnings are fine. If there are errors, copy the text and send it to me.
 
-### 3. Allow the app's address
-MT5 blocks web requests unless you allow them: **Tools → Options → Expert Advisors**, tick **Allow WebRequest for listed URL**,
-add `http://localhost:3001`, OK.
+### 3. Nothing to allow (no web address to add)
+The EA and the app talk through a shared folder on your PC (`%APPDATA%\MetaQuotes\Terminal\Common\Files\irl_bridge`), which needs
+no setup. (MT5's own web-request feature refuses `http://localhost:3001` with error 4014, whatever you put in its allowed list, so
+this EA does not use it. The input `UseWebRequest` exists for setups where it works.) You only need **Allow algorithmic trading**
+ticked in **Tools → Options → Expert Advisors** once you want it to place demo orders.
 
 ### 4. Start the app
 In a terminal in the `web` folder:
@@ -95,7 +101,8 @@ move and trailing do not happen while the EA is off.
 
 | Input | Default | Meaning |
 |---|---|---|
-| `ServerUrl` | `http://localhost:3001/api/bridge/decide` | the app. Must start with an address you allowed in step 3 |
+| `ServerUrl` | `http://localhost:3001/api/bridge/decide` | only used when `UseWebRequest` is true |
+| `UseWebRequest` | false | false = talk through the shared folder (default, works). true = MT5's WebRequest (needs the URL list; fails for localhost) |
 | `DryRun` | false | true = log what it would do, send no orders |
 | `MaxRiskPct` | 2.0 | hard cap on % of equity risked per trade |
 | `MaxLots` | 1.0 | hard cap on lots per order |
@@ -134,8 +141,8 @@ A demo run is worth doing precisely because it shows these:
 | You see | Do this |
 |---|---|
 | Live page stays on *Waiting for the Expert Advisor* | Is `npm run bridge` still running? Is the EA on a chart (smiling face)? Is **Algo Trading** green? |
-| Experts tab: `URL not allowed` / error 4060 | Step 3: add `http://localhost:3001` |
-| Experts tab: `cannot reach the app` | The app isn't running, or something else is using port 3001 |
+| Experts tab / chart: `WebRequest refused (error 4014)` | You are on the old web mode. Set `UseWebRequest = false` (the default) |
+| Experts tab / chart: `no answer from the app` | The app isn't running (start it: `npm run bridge`). The app answers through the shared folder only while it runs |
 | `only N M15 candles available` | Scroll the M15 chart back a few weeks so MT5 downloads history; in **Tools → Options → Charts** raise *Max bars in chart* |
 | The EA stops at once with an alert | You are on a real-money account. By design it will not run there |
 | Orders rejected: invalid stops | Your broker's minimum stop distance is larger than the setup's; that setup is skipped |

@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 //  What it does
 //    After every closed M15 candle it sends the recent candles, your positions and your resting orders to the
-//    web app (http://localhost:3001) and gets back what to do: place a limit order, keep or cancel one, or tighten
+//    web app on this PC (through a shared folder, or WebRequest) and gets back what to do: place a limit order, keep or cancel one, or tighten
 //    a stop. It executes that, with its own hard limits on top (see the inputs). Between those decisions it
 //    watches the price on every tick for the partial profit at +1R and then moves the stop to breakeven.
 //
@@ -24,10 +24,11 @@
 
 #include <Trade\Trade.mqh>
 
-#define EA_VERSION "1.0"
+#define EA_VERSION "1.1"
+#define FILE_DIR   "irl_bridge" // folder inside Common\Files shared with the app
 
 //--- inputs ---------------------------------------------------------
-input string ServerUrl       = "http://localhost:3001/api/bridge/decide"; // add http://localhost:3001 to the allowed WebRequest URLs
+input string ServerUrl       = "http://localhost:3001/api/bridge/decide"; // only used when UseWebRequest (last input) is true
 input long   MagicNumber     = 5051501;  // marks this EA's orders and positions
 input bool   DryRun          = false;    // true: log what it WOULD do, send no orders at all
 input double MaxRiskPct      = 2.0;      // hard cap: % of equity risked per trade, whatever the server asks for
@@ -35,6 +36,7 @@ input double MaxLots         = 1.0;      // hard cap: lots per order
 input double MaxDailyLossPct = 3.0;      // after losing this % of the day's starting equity, no new orders until tomorrow
 input int    BarsToSend      = 3000;     // closed M15 candles sent each time (the rules need history to judge structure)
 input int    DeviationPoints = 50;       // max slippage for market operations (the partial close)
+input bool   UseWebRequest   = false;    // false (default): talk to the app through a shared folder, no setup needed. true: use WebRequest (needs the URL list)
 
 //--- state ----------------------------------------------------------
 struct Plan
@@ -51,6 +53,7 @@ string   g_events[];               // messages for the app's activity log, sent 
 datetime g_syncedBar   = 0;        // open time of the M15 candle we last synced for
 datetime g_nextTry     = 0;        // do not retry before this (server time)
 datetime g_lastOk      = 0;        // server time of the last successful sync
+int      g_seq         = 0;        // counter that makes every request file name unique
 string   g_lastStatus  = "waiting for the first sync";
 int      g_day         = 0;        // yyyymmdd of the trading day being tracked
 double   g_dayStartEq  = 0.0;
@@ -69,6 +72,8 @@ void   KeepOneTradeAtATime();
 void   CheckDay();
 void   LoadDayState();
 bool   Sync();
+bool   ExchangeViaFiles(const string body, string &resp);
+bool   ExchangeViaWebRequest(const string body, string &resp);
 bool   HandleResponse(const string resp);
 void   DoPlace(const string dir, double price, double sl, double tp, const double riskPct, const datetime expUtc, const string comment);
 void   DoRenew(const ulong ticket, double price, double sl, double tp, const datetime expUtc);
@@ -93,6 +98,10 @@ int OnInit()
    g_trade.SetDeviationInPoints((ulong)DeviationPoints);
    g_trade.SetTypeFillingBySymbol(_Symbol);
    g_lastOk = TimeCurrent();
+   // Changing a setting re-runs OnInit but MT5 keeps the global variables. Forget the last sync so the new settings
+   // take effect at once instead of at the next candle.
+   g_syncedBar = 0;
+   g_nextTry   = 0;
    LoadDayState();
    CheckDay();
    EventSetTimer(2);
@@ -398,6 +407,80 @@ bool Sync()
       start = stop;
    }
 
+   string resp = "";
+   bool   exchanged;
+   if(UseWebRequest)
+      exchanged = ExchangeViaWebRequest(body, resp);
+   else
+      exchanged = ExchangeViaFiles(body, resp);
+   if(!exchanged)
+      return(false);
+   return(HandleResponse(resp));
+}
+
+// Default transport: a shared folder (Common\Files\irl_bridge). The app watches it and answers within a second.
+// No ports, no URL list: MT5's WebRequest refuses http://localhost:3001 (error 4014) even when it is listed.
+bool ExchangeViaFiles(const string body, string &resp)
+{
+   FolderCreate(FILE_DIR, FILE_COMMON);
+   g_seq++;
+   string id      = IntegerToString((long)GetTickCount()) + "_" + IntegerToString(g_seq);
+   string tmpName  = FILE_DIR + "\\req_" + id + ".tmp";
+   string reqName  = FILE_DIR + "\\req_" + id + ".txt";
+   string respName = FILE_DIR + "\\resp_" + id + ".txt";
+
+   char data[];
+   int n = StringToCharArray(body, data, 0, StringLen(body), CP_UTF8);
+   ArrayResize(data, n);
+   ResetLastError();
+   int h = FileOpen(tmpName, FILE_WRITE | FILE_BIN | FILE_COMMON);
+   if(h == INVALID_HANDLE)
+   {
+      g_lastStatus = "cannot write to the shared folder (error " + IntegerToString(GetLastError()) + ")";
+      Print("IRL bridge: ", g_lastStatus);
+      return(false);
+   }
+   FileWriteArray(h, data, 0, n);
+   FileClose(h);
+   // write under a temporary name, then rename: the app never sees a half-written request
+   if(!FileMove(tmpName, FILE_COMMON, reqName, FILE_COMMON | FILE_REWRITE))
+   {
+      g_lastStatus = "cannot hand the request to the app (error " + IntegerToString(GetLastError()) + ")";
+      Print("IRL bridge: ", g_lastStatus);
+      FileDelete(tmpName, FILE_COMMON);
+      return(false);
+   }
+
+   // wait for the answer (the app polls twice a second)
+   uint t0 = GetTickCount();
+   while(!FileIsExist(respName, FILE_COMMON) && GetTickCount() - t0 < 20000)
+      Sleep(200);
+   if(!FileIsExist(respName, FILE_COMMON))
+   {
+      FileDelete(reqName, FILE_COMMON); // withdraw it so the app does not answer a request nobody waits for
+      g_lastStatus = "no answer from the app. Is it running? (npm run bridge)";
+      Print("IRL bridge: ", g_lastStatus);
+      return(false);
+   }
+   h = FileOpen(respName, FILE_READ | FILE_BIN | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+   {
+      g_lastStatus = "cannot read the app's answer (error " + IntegerToString(GetLastError()) + ")";
+      Print("IRL bridge: ", g_lastStatus);
+      return(false);
+   }
+   char buf[];
+   FileReadArray(h, buf);
+   FileClose(h);
+   FileDelete(respName, FILE_COMMON);
+   resp = CharArrayToString(buf, 0, WHOLE_ARRAY, CP_UTF8);
+   return(true);
+}
+
+// Optional transport (UseWebRequest = true). MT5 only allows listed domains on the standard web ports, so this
+// usually fails for http://localhost:3001 with error 4014. Kept for setups where it works (e.g. an https address).
+bool ExchangeViaWebRequest(const string body, string &resp)
+{
    char data[];
    char result[];
    string resultHeaders;
@@ -408,21 +491,21 @@ bool Sync()
    if(code == -1)
    {
       int err = GetLastError();
-      if(err == 4060)
-         g_lastStatus = "URL not allowed: add http://localhost:3001 under Tools > Options > Expert Advisors > Allow WebRequest";
+      if(err == 4060 || err == 4014)
+         g_lastStatus = "WebRequest refused (error " + IntegerToString(err) + "): set UseWebRequest = false to use the shared folder instead";
       else
          g_lastStatus = "cannot reach the app (error " + IntegerToString(err) + "). Is it running?";
       Print("IRL bridge: ", g_lastStatus);
       return(false);
    }
-   string resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
    if(code != 200)
    {
       g_lastStatus = "the app answered HTTP " + IntegerToString(code) + ": " + StringSubstr(resp, 0, 120);
       Log(g_lastStatus);
       return(false);
    }
-   return(HandleResponse(resp));
+   return(true);
 }
 
 bool HandleResponse(const string resp)
