@@ -35,19 +35,39 @@ A fair value gap (FVG) is the **IRL**: internal liquidity price tends to come ba
 external swing high/low, the **ERL**. We rest a limit order at the near edge of the gap and take the trade the first
 time price returns to it. Longs buy bullish gaps, shorts sell bearish gaps.
 
+**The higher timeframe decides.** While the H1 narrative is bearish, the bearish gaps (M15 and H1) are the ones that get
+respected: we sell the pull-back into them. A bullish gap in a bearish narrative is only a short retracement and is never
+traded (and the other way round). The narrative is *steady*: it is told by the H1 gaps, not by the last swing break, so a short
+move the other way does not turn it (details below). The "pull-back" step is `requireZone`: a short is only taken once price has
+retraced up into the *premium* half of the H1 range (longs: *discount*).
+
 A touched gap becomes a trade only if **all** of these hold (each failure is counted and shown on the results page):
 
 1. no position is open (one trade at a time)
 2. the touch candle is inside the session windows (if enabled)
 3. the modelled spread at that time is ≤ `maxSpread`
-4. **H1 context:** an H1 candle has closed; with `requireTrendAlignment` the H1 trend (last BOS) matches the direction;
-   with `requireZone` the gap is in the H1 *discount* (longs) / *premium* (shorts)
+4. **H1 context:** an H1 candle has closed; with `requireTrendAlignment` the gap's direction is the H1 narrative (`htfBias`,
+   see below); with `requireZone` the gap is in the H1 *discount* (longs) / *premium* (shorts)
 5. **ERL exists:** a *confirmed* swing after the gap on the same leg: the highest swing high (long) / lowest swing low (short)
 6. the ERL is at least `minErlR` × risk away
 7. the risk distance sizes to at least `minLot`
 
 H1 gaps are evaluated before M15 gaps (**H1 priority**), and each gap gets exactly **one** chance: the first touch consumes it
 whether or not it became a trade.
+
+**The H1 narrative (`htfBias`, default `narrative`).** Every H1 gap is *live* from the candle that confirms it until an H1 candle
+**closes through its far side** (a bearish gap is broken by a close above its top, a bullish gap by a close below its bottom) or
+it is older than `fvgMaxAgeBars`. The narrative keeps its direction while at least one live gap of that direction exists; when
+the last one is gone it turns to the other direction if that has a live gap, otherwise it is "none" and nothing is traded. The
+older rule is still there as `htfBias = trend` (the direction of the latest H1 break of structure). On the 2025 and 2026 gold data
+used here the break-of-structure trend turns 4-6 times a week and the narrative about once every two weeks.
+
+*What the data says (be careful, the samples are small).* Backtests on Feb-Mar 2025 and Sep-Oct 2026 with the built-in rules:
+the narrative gave 25 trades / +2.2R and 34 trades / -7.6R against 21 / +3.5R and 28 / -7.2R for the older trend rule, which is the
+same within the noise. Trading every touched gap on its own, gaps *with* the narrative did not beat gaps *against* it by more than
+the noise (about ±0.2R per trade) in either period, so "aligned gaps are respected" is not proven by this data. The `requireZone`
+rule mattered more and in the same direction in both periods; turning it off made the results worse (narrative, zone off:
+-6.0R and -13.0R).
 
 **Entry / stop:** long = limit buy at the gap top, stop = gap bottom − `slBuffer` (shorts mirrored). 1R = |entry − stop|.
 
@@ -109,7 +129,7 @@ bypass. To add another provider (e.g. OANDA's v20 API, which would also supply b
 packages/engine/          pure TypeScript - no UI, no Next imports
   types.ts                Candle, Swing, FVG, BOS, POI, Fill, Trade ...
   config.ts               ONE typed Config with all defaults + CONFIG_FIELDS (the settings form is generated from it)
-  detectors.ts            fractal swings, FVG, BOS, EQ + premium/discount
+  detectors.ts            fractal swings, FVG, BOS, the H1 narrative, EQ + premium/discount
   strategy.ts             ALL trading rules: setup filters, entry/stop, sizing, trade management, costs
   backtest.ts             event-driven loop over M15 closes carrying H1 context (no rules of its own)
   live.ts / bridge.ts     the same rules asked "what now?" for the MT5 bridge, and its wire format

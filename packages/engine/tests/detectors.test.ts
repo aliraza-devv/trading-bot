@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, type Config } from '../config';
-import { atr, detectAll, dealingRange, findFvgs, findSwings, fvgsAsOf, trackStructure } from '../detectors';
+import { atr, detectAll, dealingRange, findFvgs, findSwings, fvgsAsOf, narrativeBias, trackStructure } from '../detectors';
 import type { Candle } from '../types';
 
 const H1 = 3_600_000;
@@ -143,6 +143,100 @@ describe('break of structure', () => {
     // each (direction, swingIdx) pair appears once
     const keys = bos.map((b) => `${b.direction}:${b.swingIdx}`);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+// ------------------------------------------------------------------ higher-timeframe narrative
+/**
+ * A bearish story with a pull-back. Worked out by hand (highs / lows / closes):
+ *   bar 2 completes a BEARISH gap [15, 18] (high[2] = 15 < low[0] = 18)
+ *   bar 6 completes a BULLISH gap [16, 17] (low[6] = 17 > high[4] = 16) - the counter-move
+ *   bar 7 is the first close above 18 (the top of the bearish gap)
+ * The story must stay bearish through the pull-back (bars 3-6) and turn bullish only at bar 7.
+ */
+const STORY = {
+  highs: [20, 19, 15, 16.5, 16.0, 17.6, 18.0, 19.5, 20],
+  lows: [18, 14, 12, 13, 14, 16.2, 17.0, 17.5, 18],
+  closes: [19, 15, 13, 16, 15.8, 17.5, 17.8, 18.5, 19.5],
+};
+const storyCandles = () => candles(STORY.highs, STORY.lows, STORY.closes);
+/** The same story upside down (price -> 40 - price): bullish gap first, a pull-back down, then a close below its bottom. */
+const mirror = (c: Candle[]): Candle[] => c.map((x) => ({ ...x, open: 40 - x.open, high: 40 - x.low, low: 40 - x.high, close: 40 - x.close }));
+const narrativeOf = (c: Candle[], k: Config) => Array.from(narrativeBias(c, runFvgs(c, k), k));
+
+describe('higher-timeframe narrative', () => {
+  const k = fvgCfg();
+
+  it('the fixture holds the gaps the comment says it does', () => {
+    expect(runFvgs(storyCandles(), k).map((f) => [f.direction, f.bottom, f.top, f.confirmIdx])).toEqual([[-1, 15, 18, 2], [1, 16, 17, 6]]);
+  });
+
+  it('a short counter-move does not turn the story; a close through the last gap of its side does', () => {
+    //                                         bar: 0  1   2   3   4   5   6   7  8
+    expect(narrativeOf(storyCandles(), k)).toEqual([0, 0, -1, -1, -1, -1, -1, 1, 1]);
+  });
+
+  it('the same story upside down gives the mirror image (no bullish/bearish mix-up)', () => {
+    expect(narrativeOf(mirror(storyCandles()), k)).toEqual([0, 0, 1, 1, 1, 1, 1, -1, -1]);
+  });
+
+  it('the last-BOS trend turns on the same pull-back that leaves the narrative alone', () => {
+    // fractalN 1: bar 3 (high 16.5) is a swing high confirmed at bar 4; bar 5 closes at 17.5 and breaks it -> trend up while the story is still down
+    const c = storyCandles();
+    const st = detectAll(c, H1, cfg({ ...k, fractalN: 1 }));
+    expect(st.bars.trend[5]).toBe(1);
+    expect(st.bars.bias[5]).toBe(-1);
+    expect(st.bars.bias[5]).toBe(narrativeOf(c, k)[5]); // detectAll exposes the same series
+  });
+
+  it('a close exactly on the far edge does not break a gap (it must close THROUGH it)', () => {
+    const c = storyCandles();
+    c[7] = { ...c[7], close: 18 };
+    expect(narrativeOf(c, k)[7]).toBe(-1);
+  });
+
+  it('only a CLOSE counts, not a wick: a high above the gap top changes nothing', () => {
+    const c = storyCandles();
+    c[5] = { ...c[5], high: 25 };
+    expect(narrativeOf(c, k)[5]).toBe(-1);
+  });
+
+  it('the same two edge cases on the bullish side (a close exactly on the bottom, and a wick below it)', () => {
+    const m = mirror(storyCandles()); // bullish gap [22, 25]; its bottom is 22
+    m[7] = { ...m[7], close: 22 };
+    expect(narrativeOf(m, k)[7]).toBe(1);
+    const w = mirror(storyCandles());
+    w[5] = { ...w[5], low: 15 };
+    expect(narrativeOf(w, k)[5]).toBe(1);
+  });
+
+  it('a gap stops counting after fvgMaxAgeBars, with nothing live the narrative is 0, and the next gap starts a new one', () => {
+    // bearish gap [15,18] confirmed at bar 2; price then sits flat below it; bars 7-9 leave a bullish gap [14, 14.6] at bar 9
+    const c = candles(
+      [20, 19, 15, 14, 14, 14, 14, 14, 14.5, 16],
+      [18, 14, 12, 11, 11, 11, 11, 11, 13, 14.6],
+      [19, 15, 13, 12, 12, 12, 12, 12, 14, 15.8],
+    );
+    expect(runFvgs(c, fvgCfg()).map((f) => [f.direction, f.confirmIdx])).toEqual([[-1, 2], [1, 9]]);
+    expect(narrativeOf(c, fvgCfg({ fvgMaxAgeBars: 3 }))).toEqual([0, 0, -1, -1, -1, 0, 0, 0, 0, 1]); // age 3 at bar 5
+    expect(narrativeOf(c, fvgCfg({ fvgMaxAgeBars: 0 }))).toEqual([0, 0, -1, -1, -1, -1, -1, -1, -1, -1]); // 0 = never expires
+  });
+
+  it('on a long random series it is steady (turns far less often than the BOS trend) and sees both sides', () => {
+    const c = synthetic(1500, 9);
+    const kk = cfg({ fvgMaxAgeBars: 200 });
+    const st = detectAll(c, H1, kk);
+    const flips = (a: ArrayLike<number>) => {
+      let n = 0, last = 0;
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] !== 0 && last !== 0 && a[i] !== last) n++;
+        if (a[i] !== 0) last = a[i];
+      }
+      return n;
+    };
+    expect(Array.from(st.bars.bias).some((x) => x === 1) && Array.from(st.bars.bias).some((x) => x === -1)).toBe(true);
+    expect(flips(st.bars.trend)).toBeGreaterThan(10);
+    expect(flips(st.bars.bias)).toBeLessThan(flips(st.bars.trend) / 2);
   });
 });
 

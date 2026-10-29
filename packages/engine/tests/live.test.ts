@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { aggregateToH1 } from '../aggregate';
-import { runBacktest } from '../backtest';
+import { alignH1Index, runBacktest } from '../backtest';
 import { detectAll } from '../detectors';
 import { trailCandidate } from '../strategy';
 import { DEFAULT_CONFIG, type Config } from '../config';
@@ -158,6 +158,74 @@ describe('parity with short-lived gaps (fvgMaxAgeBars = 8): the expiry boundary 
       }
     }
     expect(touched).toBeGreaterThan(8);
+  });
+});
+
+describe.each(['narrative', 'trend'] as const)('parity with the backtest when trading only with the H1 %s', (mode) => {
+  const cfgG = busy({ requireTrendAlignment: true, htfBias: mode });
+  const runG = runBacktest(aggregateToH1(c15, Number.MAX_SAFE_INTEGER), c15, cfgG);
+  const tradesG = runG.trades;
+  const eqG = (k: number) => cfgG.startEquity + tradesG.filter((t) => t.exitIdx < k).reduce((a, t) => a + t.pnl, 0);
+  const busyG = (k: number) => tradesG.some((t) => t.entryIdx < k && t.exitIdx >= k);
+  /** What the rule reads: the H1 view as the live engine builds it from the candles closed after candle c. */
+  const htfAt = (c: number) => {
+    const h1 = aggregateToH1(at(c15, c), closeOf(c15, c));
+    const bars = detectAll(h1, TF_MS.H1, cfgG).bars;
+    return (mode === 'trend' ? bars.trend : bars.bias)[h1.length - 1];
+  };
+
+  it('the filter really bites on this series: it refuses touched gaps and still leaves trades', () => {
+    expect(runG.skipped.trend).toBeGreaterThan(5);
+    expect(tradesG.length).toBeGreaterThan(10);
+    expect(tradesG.length).toBeLessThan(trades.length);
+    expect(tradesG.some((t) => t.direction === 1) && tradesG.some((t) => t.direction === -1)).toBe(true);
+  });
+
+  it('every trade was resting one candle earlier, and every touched resting order is a trade; none is ever against the H1 view', () => {
+    for (const t of tradesG.filter((x) => x.entryIdx > 80).slice(0, 30)) {
+      const c = t.entryIdx - 1;
+      const d = decideLive(at(c15, c), state(closeOf(c15, c), eqG(t.entryIdx)), cfgG, MIN);
+      const row = d.waiting.find((w) => w.key === gapKey(t.timeframe, { time: t.poi.fvgTime }));
+      expect(row, `trade ${t.id} should be waiting`).toBeDefined();
+      expect(['order', 'nearer_first']).toContain(row!.verdict);
+      expect(htfAt(c), `trade ${t.id}`).toBe(t.direction);
+    }
+    let touched = 0;
+    let rested = 0;
+    for (let c = 300; c < c15.length - 2; c += 7) {
+      if (busyG(c + 1)) continue;
+      const d = decideLive(at(c15, c), state(closeOf(c15, c), eqG(c + 1)), cfgG, MIN);
+      const view = htfAt(c);
+      for (const p of places(d)) {
+        rested++;
+        expect(p.direction, `candle ${c}: order ${p.key}`).toBe(view);
+        const next = c15[c + 1];
+        if (p.direction === 1 ? next.low <= p.level : next.high >= p.level) {
+          touched++;
+          expect(tradesG.some((t) => t.entryIdx === c + 1 && t.direction === p.direction), `candle ${c + 1} touched ${p.key}`).toBe(true);
+        }
+      }
+    }
+    expect(rested).toBeGreaterThan(20);
+    expect(touched).toBeGreaterThan(4);
+  });
+
+  it('the Live page note says which way the H1 view points (in the chosen mode), and that only that side is traded', () => {
+    // a candle where the narrative and the last structure break disagree, so the note must pick the right one
+    const h1All = aggregateToH1(c15, Number.MAX_SAFE_INTEGER);
+    const allBars = detectAll(h1All, TF_MS.H1, cfgG).bars;
+    const h1At = alignH1Index(c15, h1All);
+    let c = -1;
+    for (let k = 800; k < c15.length - 5 && c < 0; k++) {
+      const i = h1At[k];
+      if (allBars.trend[i] !== 0 && allBars.bias[i] !== 0 && allBars.trend[i] !== allBars.bias[i]) c = k;
+    }
+    expect(c).toBeGreaterThan(0);
+    const d = decideLive(at(c15, c), state(closeOf(c15, c), 10_000), cfgG, MIN);
+    const word = { 1: 'bullish', [-1]: 'bearish', 0: 'none yet' }[htfAt(c)];
+    expect(d.notes.join(' ')).toContain(`H1 narrative: ${word} (only gaps in that direction are traded).`);
+    const off = decideLive(at(c15, c), state(closeOf(c15, c), 10_000), busy({ requireTrendAlignment: false, htfBias: mode }), MIN);
+    expect(off.notes.join(' ')).toMatch(/H1 narrative: (bullish|bearish|none yet)\./);
   });
 });
 

@@ -5,10 +5,10 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, type Config } from '../config';
 import {
-  buyPrice, findErl, inWindow, manageBar, openPosition, sellPrice, sessionAllows, sizePosition, sortByPriority,
+  buyPrice, evaluateSetup, findErl, inWindow, manageBar, openPosition, sellPrice, sessionAllows, sizePosition, sortByPriority,
   spreadAt, toTrade, trailCandidate, type Candidate, type Position, type Setup,
 } from '../strategy';
-import type { Candle, Direction, FVG, Swing } from '../types';
+import type { Candle, Direction, FVG, Structure, Swing } from '../types';
 
 const T0 = Date.UTC(2025, 0, 6, 10);
 const bar = (i: number, o: number, h: number, l: number, c: number): Candle => ({ time: T0 + i * 900_000, open: o, high: h, low: l, close: c, volume: 0 });
@@ -253,5 +253,55 @@ describe('ERL and priority', () => {
     const mk = (tf: 'H1' | 'M15', confirmIdx: number): Candidate => ({ tf, fvg: fvg(1, confirmIdx - 1, 1, 2, confirmIdx) });
     const order = sortByPriority([mk('M15', 50), mk('H1', 10), mk('M15', 60), mk('H1', 20)]).map((c) => `${c.tf}${c.fvg.confirmIdx}`);
     expect(order).toEqual(['H120', 'H110', 'M1560', 'M1550']);
+  });
+});
+
+describe('rule 5: the higher timeframe decides which side may be traded', () => {
+  const gap = (direction: Direction): FVG => ({
+    direction, bottom: 100, top: 102, size: 2, ce: 101, idxFirst: 0, idxMid: 1, confirmIdx: 2, time: 0, confirmTime: 0,
+    firstTouchIdx: -1, fillIdx: -1, closeIdx: -1, endIdx: -1, endReason: 'open',
+  });
+  /** An H1 view with ONE closed candle whose narrative is `bias` and whose last structure break is `trend`. No swings, so a gap that passes rule 5 stops at 'no_erl'. */
+  const h1 = (bias: number, trend: number): Structure => ({
+    swings: [], fvgs: [], bos: [],
+    bars: {
+      atr: Float64Array.of(1), trend: Int8Array.of(trend), bias: Int8Array.of(bias), lastSH: Float64Array.of(NaN), lastSL: Float64Array.of(NaN),
+      rangeHigh: Float64Array.of(NaN), rangeLow: Float64Array.of(NaN), eq: Float64Array.of(NaN), pdPct: Float64Array.of(NaN), zone: Int8Array.of(0),
+    },
+  });
+  const verdict = (d: Direction, bias: number, trend: number, o: Partial<Config>) => {
+    const market = { h1: h1(bias, trend), m15: h1(0, 0) };
+    const r = evaluateSetup({ cand: { tf: 'M15', fvg: gap(d) }, bar: bar(5, 101, 102, 100, 101), k: 5, h1IdxPrev: 0, market, equity: 10_000, busy: false }, free({ requireZone: false, ...o }));
+    return r.ok ? 'ok' : r.reason;
+  };
+  const PASSED = 'no_erl'; // got past rule 5 and was stopped by the next rule that needs swings
+
+  it('narrative mode: only gaps in the narrative direction pass, whatever the last structure break says', () => {
+    expect(verdict(-1, -1, 1, { htfBias: 'narrative' })).toBe(PASSED); // bearish story, bullish last break: the short is the trade
+    expect(verdict(1, -1, 1, { htfBias: 'narrative' })).toBe('trend'); //  the long is only a retracement
+    expect(verdict(1, 1, -1, { htfBias: 'narrative' })).toBe(PASSED);
+    expect(verdict(-1, 1, -1, { htfBias: 'narrative' })).toBe('trend');
+  });
+
+  it('trend mode (the older rule): the last structure break decides, the narrative is ignored', () => {
+    expect(verdict(1, -1, 1, { htfBias: 'trend' })).toBe(PASSED); //  bearish story, but the last break was up: the long passes
+    expect(verdict(-1, -1, 1, { htfBias: 'trend' })).toBe('trend'); // ...and the short is refused
+    expect(verdict(1, 1, -1, { htfBias: 'trend' })).toBe('trend');
+  });
+
+  it('no narrative yet (0) trades nothing when the rule is on, in either mode', () => {
+    for (const d of [1, -1] as const) {
+      expect(verdict(d, 0, 0, { htfBias: 'narrative' })).toBe('trend');
+      expect(verdict(d, 0, 0, { htfBias: 'trend' })).toBe('trend');
+    }
+  });
+
+  it('switched off, both sides pass', () => {
+    for (const d of [1, -1] as const) expect(verdict(d, -1, 1, { requireTrendAlignment: false })).toBe(PASSED);
+  });
+
+  it('the default is the narrative, so the live robot follows it too', () => {
+    expect(DEFAULT_CONFIG.htfBias).toBe('narrative');
+    expect(DEFAULT_CONFIG.requireTrendAlignment).toBe(true);
   });
 });

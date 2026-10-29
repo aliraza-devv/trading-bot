@@ -11,6 +11,7 @@ export type DealingRangeRule = 'last_swing_pair' | 'rolling' | 'bos_leg';
 export type FvgEndEvent = 'touch' | 'fill' | 'close';
 export type PoiTimeframes = 'both' | 'h1' | 'm15';
 export type TrailTimeframe = 'M15' | 'H1';
+export type HtfBiasRule = 'narrative' | 'trend';
 
 export interface Config {
   // ------------------------------------------------------------------ structure (detectors)
@@ -39,9 +40,18 @@ export interface Config {
   // -------------------------------------------------------------------- setup rules (strategy)
   /** Which timeframes' fair value gaps may be traded. When both are on, H1 gaps take priority. */
   poiTimeframes: PoiTimeframes;
-  /** Longs only while the H1 trend (from BOS) is up, shorts only while it is down. */
+  /**
+   * Trade only WITH the higher timeframe: longs while the H1 narrative is bullish, shorts while it is bearish.
+   * A gap against it is only a retracement and is never traded.
+   */
   requireTrendAlignment: boolean;
-  /** Longs only from gaps in the DISCOUNT of the H1 dealing range, shorts only from PREMIUM gaps. */
+  /**
+   * How the H1 narrative is decided:
+   *  narrative -> told by the H1 fair value gaps; it turns only when every live gap on its side has been closed through
+   *  trend     -> the direction of the latest H1 break of structure (turns much more often)
+   */
+  htfBias: HtfBiasRule;
+  /** Longs only from gaps in the DISCOUNT of the H1 dealing range, shorts only from PREMIUM gaps (= the retrace happened). */
   requireZone: boolean;
   /** The external swing (ERL) must be at least this many R away, otherwise the setup is skipped. */
   minErlR: number;
@@ -88,6 +98,7 @@ export const DEFAULT_CONFIG: Config = {
 
   poiTimeframes: 'both',
   requireTrendAlignment: true,
+  htfBias: 'narrative',
   requireZone: true,
   minErlR: 3,
 
@@ -176,10 +187,16 @@ export const CONFIG_FIELDS: FieldSpec[] = [
       { value: 'm15', label: 'M15 only' },
     ],
     help: 'When both are on and both are touched, the H1 gap is taken.' },
-  { key: 'requireTrendAlignment', label: 'Require H1 trend', group: 'Setup rules', stage: 2, type: 'boolean',
-    help: 'Longs only in an H1 uptrend (last BOS up), shorts only in a downtrend.' },
+  { key: 'requireTrendAlignment', label: 'Trade only with the H1 narrative', group: 'Setup rules', stage: 2, type: 'boolean',
+    help: 'Longs only while the higher timeframe is bullish, shorts only while it is bearish. A gap against it is just a retracement and is skipped.' },
+  { key: 'htfBias', label: 'How the H1 narrative is decided', group: 'Setup rules', stage: 2, type: 'select',
+    options: [
+      { value: 'narrative', label: 'H1 gaps (steady)' },
+      { value: 'trend', label: 'Last structure break' },
+    ],
+    help: 'H1 gaps (steady): short counter-moves do not turn it; it stays until every live H1 gap on its side has been closed through. Last structure break: follows the latest H1 BOS and turns often.' },
   { key: 'requireZone', label: 'Require discount / premium', group: 'Setup rules', stage: 2, type: 'boolean',
-    help: 'Longs only from gaps below the H1 EQ, shorts only from gaps above it.' },
+    help: 'Longs only from gaps below the H1 EQ, shorts only from gaps above it: the trade waits for the retrace into the right half of the range.' },
   { key: 'minErlR', label: 'Min distance to ERL (R)', group: 'Setup rules', stage: 2, type: 'number', min: 0, step: 0.25,
     help: 'Skip the setup if the external swing is closer than this many R. Set it to the final TP so the target is reachable.' },
 

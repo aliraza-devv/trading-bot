@@ -158,7 +158,10 @@ export function LivePanel() {
               <Row k="Source" v={st?.customConfig ? <>Saved from the backtester{st.savedAt ? ` (${utcMin(st.savedAt)} UTC)` : ''}</> : <Pill tone="warn">Built-in defaults</Pill>} />
               <Row k="Risk per trade" v={`${cfg.riskPct}% of equity (capped again inside the EA)`} />
               <Row k="Gaps traded" v={{ both: 'H1 and M15 (H1 first)', h1: 'H1 only', m15: 'M15 only' }[cfg.poiTimeframes]} />
-              <Row k="Trend / zone filters" v={`${cfg.requireTrendAlignment ? 'trend on' : 'trend off'} · ${cfg.requireZone ? 'zone on' : 'zone off'}`} />
+              <Row
+                k="H1 narrative / zone"
+                v={`${cfg.requireTrendAlignment ? `trade only with it (${cfg.htfBias === 'trend' ? 'last structure break' : 'H1 gaps'})` : 'not required'} · ${cfg.requireZone ? 'zone on' : 'zone off'}`}
+              />
               <Row k="Min distance to target" v={`${cfg.minErlR}R`} />
               <Row k="Partial · trail from · final" v={`${Math.round(cfg.partialFraction * 100)}% at ${cfg.partialAtR}R · ${cfg.trailStartR}R · ${cfg.finalTpR}R`} />
               <Row k="Session (UTC)" v={cfg.sessionFilterEnabled ? cfg.sessionWindowsUtc.map(([a, b]) => `${a}-${b}`).join(', ') : 'any time'} />

@@ -344,6 +344,8 @@ export function decideLive(input: Candle[], st: LiveState, cfg: Config, opts: Li
   const skippedBy = new Map<string, number>();
   for (const w of waiting) if (w.verdict === 'skipped' && w.reason) skippedBy.set(w.reason, (skippedBy.get(w.reason) ?? 0) + 1);
   const why = [...skippedBy].map(([r, n]) => `${r} x${n}`).join(', ');
+  const story = hl < 0 ? 0 : cfg.htfBias === 'trend' ? sH1.bars.trend[hl] : sH1.bars.bias[hl];
+  notes.push(`H1 narrative: ${story === 1 ? 'bullish' : story === -1 ? 'bearish' : 'none yet'}${cfg.requireTrendAlignment ? ' (only gaps in that direction are traded)' : ''}.`);
   notes.push(
     `${waiting.length} gap(s) waiting: ${count('order')} order(s) resting, ${count('nearer_first')} behind a nearer one, ${count('skipped')} rejected${why ? ` (${why})` : ''}.`,
   );

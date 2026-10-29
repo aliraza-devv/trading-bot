@@ -8,14 +8,21 @@
  *   limit order at the near edge of the gap and take the trade the first time price returns to it,
  *   aiming for that external swing. Longs buy bullish gaps, shorts sell bearish gaps.
  *
+ * THE HIGHER TIMEFRAME DECIDES. While the H1 narrative is bearish, the M15 (and H1) bearish gaps are the ones
+ * that get respected: we sell the pull-back into them. A bullish gap in a bearish narrative is only a short
+ * retracement, so it is never traded (and the other way round). The narrative is steady on purpose (see
+ * narrativeBias in detectors.ts): a short move the other way does not turn it. The pull-back itself is rule 6:
+ * a short is only taken after price has retraced up into the premium half of the H1 range (longs: discount).
+ *
  * SETUP RULES (evaluateSetup) - a touched gap becomes a trade only if ALL hold:
  *   1. No position is open (one trade at a time).                              -> 'busy'
  *   2. The touch candle is inside the session windows (if enabled).            -> 'session'
  *   3. The modelled spread at that time is <= maxSpread.                       -> 'spread'
  *   4. H1 context: an H1 candle has closed.                                    -> 'no_h1_context'
- *   5. requireTrendAlignment: the H1 trend (last BOS) matches the direction.   -> 'trend'
+ *   5. requireTrendAlignment: the gap's direction is the H1 narrative
+ *      (htfBias 'narrative'), or the last H1 BOS direction (htfBias 'trend').  -> 'trend'
  *   6. requireZone: the gap's midpoint is in discount (long) / premium (short)
- *      of the H1 dealing range.                                                -> 'no_range' / 'zone'
+ *      of the H1 dealing range (= the retrace has happened).                   -> 'no_range' / 'zone'
  *   7. ERL exists: a CONFIRMED swing after the gap on the SAME leg (highest
  *      swing high for a long, lowest swing low for a short).                   -> 'no_erl'
  *   8. The ERL is at least minErlR x risk away from the entry.                 -> 'erl_too_close'
@@ -159,8 +166,8 @@ export function evaluateSetup(inp: SetupInput, cfg: Config): { ok: true; setup: 
   if (spreadAt(inp.bar.time, cfg) > cfg.maxSpread) return no('spread'); //                  rule 3
 
   if (inp.h1IdxPrev < 0) return no('no_h1_context'); //                                     rule 4
-  const trend = inp.market.h1.bars.trend[inp.h1IdxPrev];
-  if (cfg.requireTrendAlignment && trend !== d) return no('trend'); //                      rule 5
+  const htf = cfg.htfBias === 'trend' ? inp.market.h1.bars.trend[inp.h1IdxPrev] : inp.market.h1.bars.bias[inp.h1IdxPrev];
+  if (cfg.requireTrendAlignment && htf !== d) return no('trend'); //                        rule 5
   if (cfg.requireZone) { //                                                                 rule 6
     const eq = inp.market.h1.bars.eq[inp.h1IdxPrev];
     if (Number.isNaN(eq)) return no('no_range');

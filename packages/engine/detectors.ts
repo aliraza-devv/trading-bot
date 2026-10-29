@@ -246,6 +246,41 @@ export function trackStructure(c: Candle[], tfMs: number, swings: Swing[], cfg: 
   return { bos, trend, lastSH, lastSL, legHigh, legLow };
 }
 
+// --------------------------------------------------------------------- higher-timeframe narrative
+/**
+ * The NARRATIVE: +1 bullish / -1 bearish / 0 none, as of the close of bar t.
+ *
+ * "IRL to ERL": the story is told by the fair value gaps (the POIs), and a short move the other way is only a
+ * retracement, so it must not change the story. Therefore:
+ *   - a gap is LIVE from the bar it is confirmed until a candle CLOSES through its far side (a bearish gap is
+ *     broken by a close above its top, a bullish gap by a close below its bottom) or it is fvgMaxAgeBars old;
+ *   - the narrative keeps its direction while at least one live gap of that direction exists;
+ *   - when the last one is gone it turns to the other direction if that has a live gap, otherwise it is 0;
+ *   - with no narrative yet, the newest live gap sets it.
+ * Unlike the last-BOS trend, a lone swing break on the way back does not turn it (the BOS trend turned 4-6 times
+ * a week on 2025/2026 gold, this about once a fortnight). Uses only gaps confirmed by t and closes up to t.
+ */
+export function narrativeBias(c: Candle[], fvgs: FVG[], cfg: Config): Int8Array {
+  const out = new Int8Array(c.length);
+  const maxAge = cfg.fvgMaxAgeBars;
+  let live: FVG[] = []; // in confirmIdx order
+  let next = 0; // pointer into fvgs (ordered by confirmIdx)
+  let bias: Direction | 0 = 0;
+  for (let t = 0; t < c.length; t++) {
+    while (next < fvgs.length && fvgs[next].confirmIdx <= t) live.push(fvgs[next++]);
+    // a gap's own confirming candle never closes through it, so no "formed earlier" check is needed
+    live = live.filter((g) => !(g.direction === 1 ? c[t].close < g.bottom : c[t].close > g.top) && (maxAge === 0 || t - g.confirmIdx < maxAge));
+    const has = (d: Direction) => live.some((g) => g.direction === d);
+    if (bias === 0) bias = live.length ? live[live.length - 1].direction : 0;
+    else if (!has(bias)) {
+      const other: Direction = bias === 1 ? -1 : 1;
+      bias = has(other) ? other : 0;
+    }
+    out[t] = bias;
+  }
+  return out;
+}
+
 // ----------------------------------------------------------- EQ + premium / discount
 /**
  * Dealing range -> rangeHigh/rangeLow, eq (midpoint), pdPct (0 = low, 0.5 = EQ, 1 = high; may leave
@@ -300,7 +335,7 @@ export function detectAll(c: Candle[], tfMs: number, cfg: Config): Structure {
   const st = trackStructure(c, tfMs, swings, cfg);
   const range = dealingRange(c, st, cfg);
   const bars: BarStates = {
-    atr: atrArr, trend: st.trend, lastSH: st.lastSH, lastSL: st.lastSL, ...range,
+    atr: atrArr, trend: st.trend, bias: narrativeBias(c, fvgs, cfg), lastSH: st.lastSH, lastSL: st.lastSL, ...range,
   };
   return { swings, fvgs, bos: st.bos, bars };
 }

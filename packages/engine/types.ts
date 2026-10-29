@@ -82,6 +82,7 @@ export interface BOS {
 export interface BarStates {
   atr: Float64Array;
   trend: Int8Array; // +1 / -1 / 0 (no BOS yet)
+  bias: Int8Array; // the higher-timeframe narrative: +1 / -1 / 0 (no live gap yet), see narrativeBias()
   lastSH: Float64Array; // latest CONFIRMED swing high price
   lastSL: Float64Array;
   rangeHigh: Float64Array; // dealing range (see Config.dealingRangeRule)
@@ -136,7 +137,7 @@ export interface POI {
 export type SkipReason =
   | 'busy' //          a position was already open (or one was opened on this candle)
   | 'no_h1_context' // no H1 candle had closed yet
-  | 'trend' //         H1 trend not in the trade's direction
+  | 'trend' //         the H1 narrative (or the H1 trend, see htfBias) is not in the trade's direction
   | 'no_range' //      H1 dealing range undefined
   | 'zone' //          gap not in discount (long) / premium (short) of the H1 range
   | 'no_erl' //        no confirmed external swing on the same leg yet

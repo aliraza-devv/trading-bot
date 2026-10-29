@@ -4,7 +4,7 @@ import type { SkipReason } from '@engine/types';
 export const SKIP_TEXT: Record<SkipReason, string> = {
   busy: 'Another trade was already open',
   no_h1_context: 'No H1 candle had closed yet',
-  trend: 'H1 trend was against the trade',
+  trend: 'Not with the H1 narrative (only a retracement, or no narrative yet)',
   no_range: 'H1 dealing range not defined yet',
   zone: 'Gap in the wrong half of the H1 range (not discount for longs / premium for shorts)',
   no_erl: 'No confirmed external swing on the same leg yet',
