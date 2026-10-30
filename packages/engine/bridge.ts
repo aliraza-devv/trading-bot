@@ -7,6 +7,8 @@
  *   ea=1.0   symbol=XAUUSD   nowUtc=<epoch seconds>   serverOffsetSec=7200
  *   equity=10000.00   balance=10000.00   currency=USD   demo=1   netting=0   dryRun=0
  *   digits=2   point=0.01   tickSize=0.01   spreadNow=0.30        (spread in PRICE units)
+ *   testTrade=1                      only when the Live page's "Test trade" button was pressed a moment ago
+ *   midCandle=1                      only on an extra sync between two candle opens (test trade, or fetching a new position's plan)
  *   POS|ticket|B or S|volume|openPrice|sl|tp|openUtcSec|comment    our open positions
  *   ORD|ticket|BL or SL|volume|price|sl|tp|comment                 our resting limit orders
  *   EVT|text                                                       what the EA logged since last time
@@ -16,6 +18,7 @@
  *   OK|1|<asOfUtcSec>|<status>
  *   NOTE|text
  *   PLACE|B or S|price|sl|tp|riskPct|expiresUtcSec|comment|key
+ *   MARKET|B or S|riskDist|tpDist|riskPct|comment|key               test trade only; distances from the fill price
  *   RENEW|ticket|price|sl|tp|expiresUtcSec
  *   CANCEL|ticket|reason
  *   SL|ticket|price
@@ -123,6 +126,8 @@ export function parseBridgeRequest(text: string): ParsedRequest {
         demo: h('demo') === '1',
         positions,
         orders,
+        ...(h('testTrade') === '1' ? { testTrade: true } : {}),
+        ...(h('midCandle') === '1' ? { midCandle: true } : {}),
       },
       meta: {
         eaVersion: h('ea') ?? '?', symbol: h('symbol') ?? '?', digits: Math.max(0, Math.min(8, Math.round(num(h('digits') ?? '2', 'digits')))),
@@ -146,6 +151,8 @@ export function formatBridgeResponse(d: LiveDecision, digits: number): string {
   for (const a of d.actions) {
     if (a.type === 'place') {
       out.push(`PLACE|${a.direction === 1 ? 'B' : 'S'}|${px(a.price)}|${px(a.sl)}|${px(a.tp)}|${a.riskPct}|${sec(a.expiresMs)}|${clean(a.comment)}|${a.key}`);
+    } else if (a.type === 'market') {
+      out.push(`MARKET|${a.direction === 1 ? 'B' : 'S'}|${px(a.riskDist)}|${px(a.tpDist)}|${a.riskPct}|${clean(a.comment)}|${a.key}`);
     } else if (a.type === 'renew') {
       out.push(`RENEW|${a.ticket}|${px(a.price)}|${px(a.sl)}|${px(a.tp)}|${sec(a.expiresMs)}`);
     } else if (a.type === 'cancel') {

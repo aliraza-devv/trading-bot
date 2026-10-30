@@ -80,6 +80,9 @@ export const getSnapshot = () => memory().snapshot;
 export const getLog = (n = 80) => memory().log.slice(-n);
 export const isPaused = () => memory().paused;
 
+/** A line in the Live page's activity list, marked as coming from you. */
+export const logYou = (text: string): void => log('system', text);
+
 export function setPaused(paused: boolean): void {
   memory().paused = paused;
   writeJson(STATE_FILE, { paused });
@@ -140,7 +143,12 @@ export function recordSync(s: BridgeSnapshot): void {
 
   // Log a decision only when it differs from the last one, otherwise a quiet market would flood the log.
   const d = s.decision;
-  const acts = d.actions.map((a) => (a.type === 'place' ? `place ${a.key}` : a.type === 'renew' ? `renew ${a.ticket}` : a.type === 'cancel' ? `cancel ${a.ticket} (${a.reason})` : `trail ${a.ticket} to ${a.sl}`));
+  const acts = d.actions.map((a) =>
+    a.type === 'place' ? `place ${a.key}`
+    : a.type === 'renew' ? `renew ${a.ticket}`
+    : a.type === 'cancel' ? `cancel ${a.ticket} (${a.reason})`
+    : a.type === 'market' ? `test trade: ${a.direction === 1 ? 'buy' : 'sell'} at the market`
+    : `trail ${a.ticket} to ${a.sl}`);
   const signature = `${d.status}|${acts.filter((x) => !x.startsWith('renew')).join(',')}|${d.notes[d.notes.length - 1] ?? ''}`;
   if (signature !== m.lastSignature) {
     m.lastSignature = signature;

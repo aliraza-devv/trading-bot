@@ -42,9 +42,25 @@ export const ORDER_TAG = 'IRL:';
 /** The order comment carries the gap id; the position inherits it, which is how we find the plan again. */
 export const commentForKey = (key: string): string => ORDER_TAG + key;
 export function keyFromComment(comment: string): string {
-  const m = /IRL:([HM]\d+)/.exec(comment);
+  const m = /IRL:([HMT]\d+)/.exec(comment);
   return m ? m[1] : '';
 }
+
+// ----------------------------------------------------------------------------------------- test trade
+/**
+ * The Live page's "Test trade" button: ONE small market order right now, to prove the whole path (order, fill, partial,
+ * breakeven, trailing, exit) on the demo account without waiting for a gap to be touched. It is not a strategy setup:
+ * the direction is the H1 narrative, 1R is a fraction of the M15 ATR, and the position's tag "T<cents>" carries that 1R
+ * (a test trade has no gap to look it up from) so that it is managed exactly like any other position.
+ */
+export const TEST_RISK_ATR = 0.5;
+export const TEST_MIN_RISK = 1.5;
+export const testKey = (risk: number): string => `T${Math.round(risk * 100)}`;
+/** 1R of a test trade from its tag ("T245" = 2.45); 0 for anything else. */
+const testRisk = (key: string): number => {
+  const m = /^T(\d+)$/.exec(key);
+  return m ? Number(m[1]) / 100 : 0;
+};
 
 // ------------------------------------------------------------------------------------------- types
 export interface LivePosition {
@@ -78,6 +94,10 @@ export interface LiveState {
   demo: boolean;
   /** The user pressed pause: no new orders (open positions are still looked after). */
   paused: boolean;
+  /** The user pressed "Test trade" on the Live page a moment ago: place ONE small market order now (see testKey). */
+  testTrade?: boolean;
+  /** An extra sync in the middle of a candle (test trade, or fetching the plan of a position just opened), not the usual one at a candle open. */
+  midCandle?: boolean;
   positions: LivePosition[];
   orders: LiveOrder[];
 }
@@ -102,7 +122,9 @@ export type LiveAction =
     }
   | { type: 'renew'; ticket: number; key: string; price: number; sl: number; tp: number; expiresMs: number }
   | { type: 'cancel'; ticket: number; reason: string }
-  | { type: 'trail'; ticket: number; sl: number };
+  | { type: 'trail'; ticket: number; sl: number }
+  /** Test trade only: buy/sell at the market now. Distances (price units) from the fill price, because the app only knows the last closed candle. */
+  | { type: 'market'; key: string; direction: Direction; riskDist: number; tpDist: number; riskPct: number; comment: string };
 
 /** What the EA must watch for on an open position (it acts intrabar, between our candle-close decisions). */
 export interface PositionPlan {
@@ -177,7 +199,8 @@ function h1GapUntouched(m15: Candle[], f: FVG): boolean {
 // ------------------------------------------------------------------------------------------ decide
 export function decideLive(input: Candle[], st: LiveState, cfg: Config, opts: LiveOptions = {}): LiveDecision {
   const minBars = opts.minBars ?? 600;
-  const maxAgeMs = opts.maxAgeMs ?? 10 * 60_000;
+  // A sync in the middle of a candle sees a newest closed candle up to one candle older than one at a candle open.
+  const maxAgeMs = (opts.maxAgeMs ?? 10 * 60_000) + (st.midCandle || st.testTrade ? M15 : 0);
   const graceMs = opts.orderGraceMs ?? 120_000;
   const notes: string[] = [];
 
@@ -206,6 +229,7 @@ export function decideLive(input: Candle[], st: LiveState, cfg: Config, opts: Li
   const sH1 = detectAll(h1, H1, cfg);
   const hl = h1.length - 1; // last H1 candle closed at this moment (-1 = none)
   const market = { h1: sH1, m15: sM15 };
+  const story = hl < 0 ? 0 : cfg.htfBias === 'trend' ? sH1.bars.trend[hl] : sH1.bars.bias[hl]; // the H1 narrative right now
 
   const tick = st.tickSize > 0 ? st.tickSize : 0.01;
   const s = Math.max(0, st.spreadNow);
@@ -305,18 +329,38 @@ export function decideLive(input: Candle[], st: LiveState, cfg: Config, opts: Li
   }
   for (const [key, d] of desired) if (!kept.has(key)) actions.push(d);
 
+  // ---- 4b) the Live page's test trade: one small market order now, in the direction of the H1 narrative (demo only: every
+  //          refusal above has already returned). Whatever was resting is withdrawn first, the test trade replaces it.
+  if (st.testTrade) {
+    const refusal = st.paused ? 'the bridge is paused' : busy ? 'a position is already open' : story === 0 ? 'there is no H1 narrative to follow yet' : null;
+    if (refusal) {
+      notes.push(`Test trade refused: ${refusal}.`);
+    } else {
+      const atr = sM15.bars.atr[L];
+      const risk = Math.max(TEST_MIN_RISK, Math.round((Number.isFinite(atr) ? TEST_RISK_ATR * atr : 0) * 100) / 100);
+      const d: Direction = story === 1 ? 1 : -1;
+      actions.length = 0;
+      for (const o of st.orders) actions.push({ type: 'cancel', ticket: o.ticket, reason: 'test trade' });
+      actions.push({
+        type: 'market', key: testKey(risk), direction: d, riskDist: risk, tpDist: Math.round(cfg.finalTpR * risk * 100) / 100,
+        riskPct: cfg.riskPct, comment: commentForKey(testKey(risk)),
+      });
+      notes.push(`Test trade: ${d === 1 ? 'buy' : 'sell'} at the market now, 1R = ${risk.toFixed(2)}, target ${cfg.finalTpR}R (the H1 narrative is ${d === 1 ? 'bullish' : 'bearish'}).`);
+    }
+  }
+
   // ---- 5) open positions: hand the EA its plan, and trail the stop on candle closes
   const plans: PositionPlan[] = [];
   for (const p of st.positions) {
-    const gap = findGap(p.key, sM15.fvgs, sH1.fvgs);
-    if (!gap) {
+    const fixedRisk = testRisk(p.key); // a test trade has no gap: its tag carries its 1R and its entry is the fill
+    const gap = findGap(p.key, sM15.fvgs, sH1.fvgs); // null for a test tag
+    if (!gap && !(fixedRisk > 0)) {
       notes.push(`Position ${p.ticket}: its gap ${p.key || '(no tag in the order comment)'} is not in the data window; the broker's stop and target stay as they are.`);
       continue;
     }
     const d = p.direction;
-    const level = d === 1 ? gap.top : gap.bottom;
-    const stop0 = d === 1 ? gap.bottom - cfg.slBuffer : gap.top + cfg.slBuffer;
-    const risk = Math.abs(level - stop0);
+    const level = gap ? (d === 1 ? gap.top : gap.bottom) : p.openPrice;
+    const risk = gap ? Math.abs(level - (d === 1 ? gap.bottom - cfg.slBuffer : gap.top + cfg.slBuffer)) : fixedRisk;
     if (!(risk > 0)) continue;
     plans.push({ ticket: p.ticket, key: p.key, partialPrice: level + d * cfg.partialAtR * risk, partialFraction: cfg.partialFraction, breakeven: p.openPrice });
 
@@ -344,7 +388,6 @@ export function decideLive(input: Candle[], st: LiveState, cfg: Config, opts: Li
   const skippedBy = new Map<string, number>();
   for (const w of waiting) if (w.verdict === 'skipped' && w.reason) skippedBy.set(w.reason, (skippedBy.get(w.reason) ?? 0) + 1);
   const why = [...skippedBy].map(([r, n]) => `${r} x${n}`).join(', ');
-  const story = hl < 0 ? 0 : cfg.htfBias === 'trend' ? sH1.bars.trend[hl] : sH1.bars.bias[hl];
   notes.push(`H1 narrative: ${story === 1 ? 'bullish' : story === -1 ? 'bearish' : 'none yet'}${cfg.requireTrendAlignment ? ' (only gaps in that direction are traded)' : ''}.`);
   notes.push(
     `${waiting.length} gap(s) waiting: ${count('order')} order(s) resting, ${count('nearer_first')} behind a nearer one, ${count('skipped')} rejected${why ? ` (${why})` : ''}.`,

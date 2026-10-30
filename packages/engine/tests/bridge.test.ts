@@ -36,6 +36,17 @@ describe('parseBridgeRequest', () => {
     if (r.ok) expect(r.state.positions[0]).toMatchObject({ direction: -1, key: '' });
   });
 
+  it('testTrade and midCandle are only true when the EA says =1 (absent otherwise, so nothing leaks into normal syncs)', () => {
+    const none = parseBridgeRequest(req());
+    expect(none.ok && 'testTrade' in none.state).toBe(false);
+    expect(none.ok && 'midCandle' in none.state).toBe(false);
+    const off = parseBridgeRequest(req('testTrade=0', 'midCandle=0'));
+    expect(off.ok && off.state.testTrade).toBeUndefined();
+    expect(off.ok && off.state.midCandle).toBeUndefined();
+    const on = parseBridgeRequest(req('testTrade=1', 'midCandle=1'));
+    expect(on.ok && [on.state.testTrade, on.state.midCandle]).toEqual([true, true]);
+  });
+
   it('demo is false unless the EA says demo=1', () => {
     const r = parseBridgeRequest(req().replace('demo=1', 'demo=0'));
     expect(r.ok && r.state.demo).toBe(false);
@@ -84,6 +95,15 @@ describe('formatBridgeResponse', () => {
   it('free text can never break the line / field format', () => {
     const lines = formatBridgeResponse({ ...decision, notes: ['a|b\r\nc'], actions: [{ type: 'cancel', ticket: 1, reason: 'x|y\nz' }], plans: [] }, 2).split('\n');
     expect(lines).toEqual(['OK|1|1738800900|ok', 'NOTE|a b c', 'CANCEL|1|x y z', '']);
+  });
+
+  it('a test trade is one MARKET line with distances, not prices', () => {
+    const d: LiveDecision = {
+      ...decision, notes: [], plans: [],
+      actions: [{ type: 'market', key: 'T245', direction: -1, riskDist: 2.45, tpDist: 7.35, riskPct: 1, comment: 'IRL:T245' }],
+    };
+    expect(formatBridgeResponse(d, 2).split('\n')).toEqual(['OK|1|1738800900|ok', 'MARKET|S|2.45|7.35|1|IRL:T245|T245', '']);
+    expect(formatBridgeResponse({ ...d, actions: [{ ...(d.actions[0] as Extract<(typeof d.actions)[number], { type: 'market' }>), direction: 1 }] }, 2).split('\n')[1]).toMatch(/^MARKET\|B\|/);
   });
 
   it('a short is S', () => {

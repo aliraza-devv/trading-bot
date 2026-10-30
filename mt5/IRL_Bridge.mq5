@@ -15,17 +15,20 @@
 //    - risk more than MaxRiskPct of equity, or more than MaxLots, whatever the server says
 //    - open a position without a stop loss at the broker
 //    - leave orders behind if the app stops answering (they expire after one candle, and a watchdog removes them)
+//    - open a market trade on its own: the only market order it will ever send comes from the app's "Test trade"
+//      button (demo only, one position, the same caps), and only while answering a request made seconds earlier
 //
 //  Setup: see mt5/README.md
 //+------------------------------------------------------------------+
 #property copyright "IRL to ERL backtester"
-#property version   "1.00"
+#property version   "1.20"
 #property description "Executes the decisions of the local IRL->ERL web app. Demo accounts only."
 
 #include <Trade\Trade.mqh>
 
-#define EA_VERSION "1.1"
+#define EA_VERSION "1.2"
 #define FILE_DIR   "irl_bridge" // folder inside Common\Files shared with the app
+#define TEST_FILE  "irl_bridge\\test_trade.txt" // left by the app's "Test trade" button (holds the UTC time in seconds)
 
 //--- inputs ---------------------------------------------------------
 input string ServerUrl       = "http://localhost:3001/api/bridge/decide"; // only used when UseWebRequest (last input) is true
@@ -37,6 +40,7 @@ input double MaxDailyLossPct = 3.0;      // after losing this % of the day's sta
 input int    BarsToSend      = 3000;     // closed M15 candles sent each time (the rules need history to judge structure)
 input int    DeviationPoints = 50;       // max slippage for market operations (the partial close)
 input bool   UseWebRequest   = false;    // false (default): talk to the app through a shared folder, no setup needed. true: use WebRequest (needs the URL list)
+input bool   AllowTestTrade  = true;     // true: the "Test trade" button on the app's Live page may open ONE small market trade (demo only). false: it is ignored
 
 //--- state ----------------------------------------------------------
 struct Plan
@@ -58,6 +62,8 @@ string   g_lastStatus  = "waiting for the first sync";
 int      g_day         = 0;        // yyyymmdd of the trading day being tracked
 double   g_dayStartEq  = 0.0;
 bool     g_halted      = false;    // daily loss limit reached
+bool     g_testTrade   = false;    // true only while the sync that answers a fresh "Test trade" request is running
+bool     g_resync      = false;    // a market trade was just opened: fetch its plan (partial, breakeven) without waiting for the next candle
 
 //--- forward declarations -------------------------------------------
 void   Log(const string msg);
@@ -75,6 +81,8 @@ bool   Sync();
 bool   ExchangeViaFiles(const string body, string &resp);
 bool   ExchangeViaWebRequest(const string body, string &resp);
 bool   HandleResponse(const string resp);
+void   CheckTestRequest();
+void   DoMarket(const string dir, const double riskDist, const double tpDist, const double riskPct, const string comment);
 void   DoPlace(const string dir, double price, double sl, double tp, const double riskPct, const datetime expUtc, const string comment);
 void   DoRenew(const ulong ticket, double price, double sl, double tp, const datetime expUtc);
 void   DoCancel(const ulong ticket, const string why);
@@ -123,12 +131,19 @@ void OnTimer()
 {
    CheckDay();
    KeepOneTradeAtATime();
+   CheckTestRequest();
    datetime bar = iTime(_Symbol, PERIOD_M15, 0); // open time of the candle forming right now
    if(bar != 0 && bar != g_syncedBar && TimeCurrent() >= g_nextTry)
    {
       if(Sync())
          g_syncedBar = bar;
       else
+         g_nextTry = TimeCurrent() + 20;
+   }
+   else if(g_resync && TimeCurrent() >= g_nextTry)
+   {
+      g_resync = false; // one extra sync, so the position opened by a test trade gets its plan at once
+      if(!Sync())
          g_nextTry = TimeCurrent() + 20;
    }
    ShowStatus();
@@ -340,6 +355,10 @@ bool Sync()
    body += "demo=1\n";
    body += "netting=" + (netting ? "1" : "0") + "\n";
    body += "dryRun=" + (DryRun ? "1" : "0") + "\n";
+   if(g_syncedBar != 0 && iTime(_Symbol, PERIOD_M15, 0) == g_syncedBar)
+      body += "midCandle=1\n";   // an extra sync inside a candle we already synced for: the app then tolerates an older newest candle
+   if(g_testTrade)
+      body += "testTrade=1\n";
    body += "digits=" + IntegerToString(digits) + "\n";
    body += "point=" + DoubleToString(point, 8) + "\n";
    body += "tickSize=" + DoubleToString(tick, 8) + "\n";
@@ -541,6 +560,8 @@ bool HandleResponse(const string resp)
       else if(cmd == "PLACE" && nf >= 8)
          DoPlace(f[1], StringToDouble(f[2]), StringToDouble(f[3]), StringToDouble(f[4]), StringToDouble(f[5]),
                  (datetime)StringToInteger(f[6]), f[7]);
+      else if(cmd == "MARKET" && nf >= 6)
+         DoMarket(f[1], StringToDouble(f[2]), StringToDouble(f[3]), StringToDouble(f[4]), f[5]);
       else if(cmd == "RENEW" && nf >= 6)
          DoRenew((ulong)StringToInteger(f[1]), StringToDouble(f[2]), StringToDouble(f[3]), StringToDouble(f[4]),
                  (datetime)StringToInteger(f[5]));
@@ -560,6 +581,134 @@ bool HandleResponse(const string resp)
    DropClosedPlans();
    g_lastOk = TimeCurrent();
    return(true);
+}
+
+//+------------------------------------------------------------------+
+//| The app's "Test trade" button                                    |
+//+------------------------------------------------------------------+
+// The button leaves irl_bridge\test_trade.txt (the time in UTC seconds). We take it away at once, so it can only ever
+// fire once, ignore it if it is old (MT5 was closed when it was written), and do one extra sync that says testTrade=1.
+void CheckTestRequest()
+{
+   if(!FileIsExist(TEST_FILE, FILE_COMMON))
+      return;
+   long when = 0;
+   int h = FileOpen(TEST_FILE, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h != INVALID_HANDLE)
+   {
+      when = StringToInteger(FileReadString(h));
+      FileClose(h);
+   }
+   FileDelete(TEST_FILE, FILE_COMMON);
+   if(!AllowTestTrade)
+   {
+      Log("test trade request ignored: AllowTestTrade is off in this EA's inputs.");
+      return;
+   }
+   long age = (long)TimeGMT() - when;
+   if(when <= 0 || age < -60 || age > 90)
+   {
+      Log("ignored an old test trade request (" + IntegerToString(age) + " s old).");
+      return;
+   }
+   Log("test trade requested from the Live page.");
+   g_testTrade = true;
+   Sync();
+   g_testTrade = false;
+}
+
+// One small trade at the market, for the test button only. The app sends DISTANCES (stop, target) because it only
+// knows the last closed candle; they are applied to the real fill price here. It is refused unless a fresh test
+// request is being answered, so no stray MARKET line can ever open a trade. Sizing, caps and checks as for a limit order.
+void DoMarket(const string dir, const double riskDist, const double tpDist, const double riskPct, const string comment)
+{
+   if(!g_testTrade)
+   {
+      Log("ignored a market order: no test trade was requested here.");
+      return;
+   }
+   if(!IsDemo())
+   {
+      Log("not a demo account: refusing to trade.");
+      return;
+   }
+   if(g_halted)
+   {
+      Log("daily loss limit reached: not placing " + comment);
+      return;
+   }
+   if(HaveOwnPosition())
+   {
+      Log("a position is open: not placing " + comment);
+      return;
+   }
+   bool   buy    = (dir == "B");
+   int    digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double price  = (buy ? ask : bid);
+   double minDist = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   if(price <= 0.0 || !(riskDist > 0.0) || !(tpDist > 0.0) || riskDist > price * 0.01 || tpDist > price * 0.03)
+   {
+      Log("rejected " + comment + ": the stop or target distance makes no sense.");
+      return;
+   }
+   if(riskDist < minDist || tpDist < minDist)
+   {
+      Log("skipped " + comment + ": stop or target too close to the market for this broker.");
+      return;
+   }
+   double sl = NormPrice(buy ? price - riskDist : price + riskDist);
+   double tp = NormPrice(buy ? price + tpDist : price - tpDist);
+
+   // lots from the risk budget, exactly as for a limit order
+   double risk    = MathMin(riskPct, MaxRiskPct);
+   double tick    = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickVal = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+   if(tickVal <= 0.0)
+      tickVal = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   if(tick <= 0.0 || tickVal <= 0.0 || risk <= 0.0)
+   {
+      Log("cannot size " + comment + ": the symbol's tick size or tick value is unknown.");
+      return;
+   }
+   double lossPerLot = MathAbs(price - sl) / tick * tickVal;
+   double lots = AccountInfoDouble(ACCOUNT_EQUITY) * risk / 100.0 / lossPerLot;
+   lots = Floor2Step(MathMin(lots, MaxLots));
+   lots = MathMin(lots, SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX));
+   double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(lots < vmin)
+   {
+      Log("skipped " + comment + ": the risk budget gives " + DoubleToString(lots, 2) + " lots, below the broker minimum " + DoubleToString(vmin, 2) + ".");
+      return;
+   }
+   double margin = 0.0;
+   if(OrderCalcMargin(buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, lots, price, margin) && margin > AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+   {
+      Log("skipped " + comment + ": not enough free margin for " + DoubleToString(lots, 2) + " lots.");
+      return;
+   }
+
+   string desc = "TEST TRADE: " + (buy ? "buy" : "sell") + " " + DoubleToString(lots, 2) + " lots at the market (about " + DoubleToString(price, digits) +
+                 "), stop " + DoubleToString(sl, digits) + ", target " + DoubleToString(tp, digits) +
+                 ", risk " + DoubleToString(risk, 2) + "% (" + comment + ")";
+   if(DryRun)
+   {
+      Log("[dry run] would place " + desc);
+      return;
+   }
+   bool done;
+   if(buy)
+      done = g_trade.Buy(lots, _Symbol, 0.0, sl, tp, comment);
+   else
+      done = g_trade.Sell(lots, _Symbol, 0.0, sl, tp, comment);
+   if(done)
+   {
+      Log("placed " + desc);
+      g_resync = true; // the plan for this position (partial at +1R, breakeven) comes with the next sync, which we do right away
+   }
+   else
+      Log("order rejected (" + g_trade.ResultRetcodeDescription() + "): " + desc);
 }
 
 //+------------------------------------------------------------------+

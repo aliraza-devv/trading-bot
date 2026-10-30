@@ -81,6 +81,25 @@ From then on it places real **demo** orders.
 - When it fills, the other resting orders are removed. At **+1R** the EA closes half and moves the stop to breakeven; from **+2R**
   the stop trails the latest swing; the rest closes at **+3R** (all adjustable in the backtester, then re-saved to the bridge).
 
+## Test trade (version 1.2 and later)
+
+Waiting for a gap can take days. The **Test trade** card at the top of the Live page makes the robot open **one small trade at the
+market right now**, so you can watch the whole path (fill, partial at +1R, breakeven, stop or target) without waiting.
+
+- It follows the **H1 narrative** (bearish = sell, bullish = buy). With no narrative, with a position already open, when paused,
+  or when the data is stale, it says why in the Latest decision notes and does nothing.
+- 1R is half of the M15 ATR (never less than $1.50) and the target is `finalTpR` × 1R. The tag in the order comment is `IRL:T<cents>`:
+  it carries that 1R, because a test trade has no gap. After the fill the EA does one extra sync so the position gets its normal plan.
+- It first cancels any resting order, so there is never more than one trade.
+- How it works: the button leaves `irl_bridge\test_trade.txt` in the shared folder; the EA checks for it every 2 seconds, deletes it,
+  and does an extra sync marked `testTrade=1`. A note older than 90 seconds is ignored (MT5 may have been closed when it was written).
+- Safety is unchanged: demo only, `MaxLots`, `MaxRiskPct`, a stop on every trade, one position at a time. The EA refuses a `MARKET`
+  line from the app unless it is answering a request made seconds earlier, so nothing else can open a market trade.
+  Set `AllowTestTrade = false` in the EA inputs to switch the whole feature off.
+- It is a plumbing test, not a strategy trade: do not read its profit or loss as a result of the rules.
+
+After copying a new `IRL_Bridge.mq5` into `MQL5\Experts` and compiling it, **drag the EA onto the chart again** (MT5 does not reload a running EA by itself).
+
 ## Safety, in plain words
 
 | Protection | Where |
@@ -109,7 +128,8 @@ move and trailing do not happen while the EA is off.
 | `MaxDailyLossPct` | 3.0 | stop for the day after this loss |
 | `BarsToSend` | 3000 | closed M15 candles sent each time (about 6 weeks) |
 | `MagicNumber` | 5051501 | tags this EA's orders. Change only if you run two copies |
-| `DeviationPoints` | 50 | slippage allowed on the partial close |
+| `DeviationPoints` | 50 | slippage allowed on the partial close and on a test trade |
+| `AllowTestTrade` | true | lets the Live page's Test trade button open one small market trade (demo only). false = ignore it |
 
 ## Stopping it
 

@@ -13,7 +13,7 @@ import { alignH1Index, runBacktest } from '../backtest';
 import { detectAll } from '../detectors';
 import { trailCandidate } from '../strategy';
 import { DEFAULT_CONFIG, type Config } from '../config';
-import { checkBars, commentForKey, decideLive, gapKey, keyFromComment, type LiveAction, type LiveDecision, type LiveState } from '../live';
+import { checkBars, commentForKey, decideLive, gapKey, keyFromComment, TEST_MIN_RISK, TEST_RISK_ATR, testKey, type LiveAction, type LiveDecision, type LiveState } from '../live';
 import { TF_MS, type Candle } from '../types';
 
 const T0 = Date.UTC(2025, 0, 6, 10);
@@ -361,6 +361,7 @@ describe('reconciling with orders already at the broker', () => {
 describe('comment tags', () => {
   it('survive a round trip and ignore unrelated comments', () => {
     expect(keyFromComment(commentForKey('H28980000'))).toBe('H28980000');
+    expect(keyFromComment(commentForKey(testKey(2.45)))).toBe('T245'); // a test trade carries its 1R in cents
     expect(keyFromComment('[sl] manual')).toBe('');
     expect(keyFromComment('')).toBe('');
   });
@@ -384,6 +385,107 @@ describe('open positions', () => {
     const d = decideLive(at(c15, 700), state(closeOf(c15, 700), 10_000, { positions: [pos] }), cfg, MIN);
     expect(d.plans).toHaveLength(0);
     expect(d.actions).toHaveLength(0);
+    expect(d.notes.join(' ')).toMatch(/not in the data window/);
+  });
+});
+
+describe('test trade (the Live page button)', () => {
+  const cfgN = busy({ htfBias: 'narrative' });
+  const h1All = aggregateToH1(c15, Number.MAX_SAFE_INTEGER);
+  const allBars = detectAll(h1All, TF_MS.H1, cfgN).bars;
+  const h1At = alignH1Index(c15, h1All);
+  /** The first candle (from `from`) after which the live engine sees this H1 narrative; confirmed independently of the scan. */
+  const candleWith = (want: number, from = 800) => {
+    for (let k = from; k < c15.length - 5; k++) {
+      if (allBars.bias[h1At[k]] !== want) continue;
+      const h1 = aggregateToH1(at(c15, k), closeOf(c15, k));
+      if (h1.length && detectAll(h1, TF_MS.H1, cfgN).bars.bias[h1.length - 1] === want) return k;
+    }
+    throw new Error(`no candle with the H1 narrative ${want}`);
+  };
+  const bear = candleWith(-1);
+  const bull = candleWith(1, 100); // on this series the narrative is bullish only early on
+  const neutral = 20; // the first hours of the series: no H1 gap yet, so no narrative (checked below)
+
+  type Market = Extract<LiveAction, { type: 'market' }>;
+  const markets = (d: LiveDecision) => d.actions.filter((a): a is Market => a.type === 'market');
+  const go = (c: number, o: Partial<LiveState> = {}) => decideLive(at(c15, c), state(closeOf(c15, c), 10_000, { testTrade: true, ...o }), cfgN, { minBars: Math.min(50, c + 1) });
+  const pos = { ticket: 9, direction: 1 as const, volume: 0.1, openPrice: 100, sl: 90, tp: 130, openTime: closeOf(c15, bear) - 60_000, key: 'M1' };
+
+  it('the scan found three different situations', () => {
+    expect(new Set([bear, bull, neutral]).size).toBe(3);
+  });
+
+  it('follows the H1 narrative (a sell when bearish, a buy when bullish); 1R comes from the M15 ATR, the target is finalTpR x 1R', () => {
+    for (const [c, dirn] of [[bear, -1], [bull, 1]] as const) {
+      const d = go(c);
+      expect(d.status).toBe('ok');
+      const atr = detectAll(at(c15, c), TF_MS.M15, cfgN).bars.atr[c];
+      const risk = Math.max(TEST_MIN_RISK, Math.round(TEST_RISK_ATR * atr * 100) / 100);
+      expect(markets(d)).toEqual([
+        { type: 'market', key: testKey(risk), direction: dirn, riskDist: risk, tpDist: Math.round(cfgN.finalTpR * risk * 100) / 100, riskPct: cfgN.riskPct, comment: `IRL:${testKey(risk)}` },
+      ]);
+      expect(d.notes.join(' ')).toContain(`Test trade: ${dirn === 1 ? 'buy' : 'sell'} at the market now`);
+    }
+  });
+
+  it('without the button nothing changes: no market order, and the decision is identical', () => {
+    const plain = decideLive(at(c15, bear), state(closeOf(c15, bear), 10_000), cfgN, MIN);
+    expect(go(bear, { testTrade: false })).toEqual(plain);
+    expect(markets(plain)).toHaveLength(0);
+  });
+
+  it('replaces whatever is resting: the orders are cancelled first, then the market order; no new limit order', () => {
+    const resting = { ticket: 77, direction: 1 as const, volume: 0.1, price: 100, sl: 90, tp: 130, key: 'M1' };
+    const d = go(bear, { orders: [resting, { ...resting, ticket: 78 }] });
+    expect(d.actions.map((a) => a.type)).toEqual(['cancel', 'cancel', 'market']);
+    expect(d.actions.slice(0, 2)).toEqual([{ type: 'cancel', ticket: 77, reason: 'test trade' }, { type: 'cancel', ticket: 78, reason: 'test trade' }]);
+    expect(places(d)).toHaveLength(0);
+  });
+
+  it('is refused, with the reason in the notes, when paused, when a position is open, and when there is no H1 narrative', () => {
+    const refused: Array<[string, number, Partial<LiveState>, string]> = [
+      ['paused', bear, { paused: true }, 'the bridge is paused'],
+      ['a position is open', bear, { positions: [pos] }, 'a position is already open'],
+      ['no narrative', neutral, {}, 'there is no H1 narrative to follow yet'],
+    ];
+    for (const [name, c, o, why] of refused) {
+      const d = go(c, o);
+      expect(markets(d), name).toHaveLength(0);
+      expect(d.notes, name).toContain(`Test trade refused: ${why}.`);
+    }
+    expect(go(neutral).notes.join(' ')).toContain('H1 narrative: none yet');
+  });
+
+  it('never on a real-money account, and not on stale data', () => {
+    const real = go(bear, { demo: false });
+    expect([real.status, markets(real).length]).toEqual(['not_demo', 0]);
+    const old = go(bear, { nowMs: closeOf(c15, bear) + 26 * 60_000 });
+    expect([old.status, markets(old).length]).toEqual(['stale', 0]);
+  });
+
+  it('a sync between two candle opens tolerates a newest candle up to one candle older, an ordinary one does not', () => {
+    const t = closeOf(c15, bear) + 14 * 60_000;
+    expect(go(bear, { nowMs: t }).status).toBe('ok');
+    expect(markets(go(bear, { nowMs: t }))).toHaveLength(1);
+    const sync = (o: Partial<LiveState>) => decideLive(at(c15, bear), state(t, 10_000, o), cfgN, MIN);
+    expect(sync({}).status).toBe('stale');
+    expect(sync({ midCandle: true }).status).toBe('ok');
+    expect(sync({ midCandle: true, nowMs: closeOf(c15, bear) + 26 * 60_000 }).status).toBe('stale');
+  });
+
+  it('a test position is managed like any other: its tag carries 1R and its entry is the fill', () => {
+    for (const [dirn, want] of [[-1, 2997.55], [1, 3002.45]] as const) {
+      const p = { ticket: 31, direction: dirn, volume: 1, openPrice: 3000, sl: 3000 - dirn * 2.45, tp: 3000 + dirn * 7.35, openTime: closeOf(c15, 700) - 1000, key: 'T245' };
+      const d = decideLive(at(c15, 700), state(closeOf(c15, 700), 10_000, { positions: [p] }), cfgN, MIN);
+      expect(d.plans).toHaveLength(1);
+      expect(d.plans[0]).toMatchObject({ ticket: 31, key: 'T245', partialFraction: cfgN.partialFraction, breakeven: 3000 });
+      expect(d.plans[0].partialPrice).toBeCloseTo(want, 9);
+      expect(d.notes.join(' ')).not.toMatch(/not in the data window/);
+    }
+    const broken = { ticket: 32, direction: 1 as const, volume: 1, openPrice: 3000, sl: 2990, tp: 0, openTime: closeOf(c15, 700) - 1000, key: 'T0' };
+    const d = decideLive(at(c15, 700), state(closeOf(c15, 700), 10_000, { positions: [broken] }), cfgN, MIN);
+    expect(d.plans).toHaveLength(0);
     expect(d.notes.join(' ')).toMatch(/not in the data window/);
   });
 });

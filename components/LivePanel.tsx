@@ -61,6 +61,8 @@ export function LivePanel() {
   const [st, setSt] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testAsk, setTestAsk] = useState(false); // the "are you sure" step of the test-trade button
+  const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -90,6 +92,20 @@ export function LivePanel() {
     try {
       const r = await fetch('/api/bridge/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused }) });
       if (r.ok) setSt((s) => (s ? { ...s, paused } : s));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendTestTrade() {
+    setBusy(true);
+    setTestAsk(false);
+    try {
+      const r = await fetch('/api/bridge/test-trade', { method: 'POST' });
+      const j = (await r.json()) as { ok?: boolean; message?: string };
+      setTestMsg({ ok: r.ok && j.ok === true, text: j.message ?? `HTTP ${r.status}` });
+    } catch {
+      setTestMsg({ ok: false, text: 'Cannot reach the app. Is it still running?' });
     } finally {
       setBusy(false);
     }
@@ -126,6 +142,30 @@ export function LivePanel() {
         Pausing here cancels resting orders at the next sync; open positions keep their stop and target.
       </div>
 
+      <Card title="Test trade (demo)">
+        <p className="text-sm text-zinc-300">
+          Does not wait for a gap. Makes the robot open <b>one small trade at the market right now</b>, in the direction of the H1 narrative, so you can watch the
+          whole path work: fill, partial profit at 1R, breakeven, stop or target. It is a plumbing test, not a strategy trade. The Expert Advisor&apos;s caps still apply
+          (demo only, 1 lot at most, a stop on every trade), and it needs a version 1.2 Expert Advisor.
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {!testAsk ? (
+            <button type="button" disabled={!st || busy} onClick={() => { setTestMsg(null); setTestAsk(true); }}
+              className="rounded bg-sky-800 px-3 py-1.5 text-sm font-medium hover:bg-sky-700 disabled:opacity-50">Test trade now</button>
+          ) : (
+            <>
+              <span className="text-sm text-amber-300">Open one trade on the DEMO account right now?</span>
+              <button type="button" disabled={busy} onClick={sendTestTrade} className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50">Yes, place it</button>
+              <button type="button" onClick={() => setTestAsk(false)} className="rounded bg-zinc-700 px-3 py-1.5 text-sm font-medium hover:bg-zinc-600">Cancel</button>
+            </>
+          )}
+        </div>
+        {snap && Number(snap.meta.eaVersion) < 1.2 && (
+          <p className="mt-2 text-sm text-amber-300">The Expert Advisor that last checked in is version {snap.meta.eaVersion}. The button needs version 1.2: drag IRL_Bridge onto the gold chart again (and remove the old one if two charts have it).</p>
+        )}
+        {testMsg && <p role="status" className={`mt-2 text-sm ${testMsg.ok ? 'text-emerald-300' : 'text-red-300'}`}>{testMsg.text}</p>}
+      </Card>
+
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="Connection">
           {!st && <p className="text-sm text-zinc-400">Loading…</p>}
@@ -136,7 +176,7 @@ export function LivePanel() {
           )}
           {snap && age !== null && (
             <>
-              <Row k="Expert Advisor" v={connected ? <Pill tone="good">Connected</Pill> : <Pill tone="warn">No sync for {ago(age)}</Pill>} />
+              <Row k="Expert Advisor" v={<>{connected ? <Pill tone="good">Connected</Pill> : <Pill tone="warn">No sync for {ago(age)}</Pill>} <span className="text-zinc-400">version {snap.meta.eaVersion}</span></>} />
               <Row k="Last sync" v={`${utc(snap.receivedAt)} UTC (${ago(age)} ago)`} />
               <Row k="Next sync expected" v={`${utc(snap.decision.asOf + BAR_MS)} UTC (after the next candle closes)`} />
               <Row k="Account" v={snap.demo ? <Pill tone="good">DEMO</Pill> : <Pill tone="bad">NOT DEMO: bridge refuses</Pill>} />
@@ -191,6 +231,7 @@ export function LivePanel() {
                     {a.type === 'renew' && <>Keep order #{a.ticket} alive for one more candle (gap {a.key})</>}
                     {a.type === 'cancel' && <>Cancel order #{a.ticket}: {a.reason}</>}
                     {a.type === 'trail' && <>Trail the stop of position #{a.ticket} to {a.sl.toFixed(2)}</>}
+                    {a.type === 'market' && <>Test trade: <b>{a.direction === 1 ? 'buy' : 'sell'} at the market now</b> · stop {a.riskDist.toFixed(2)} away · target {a.tpDist.toFixed(2)} away · risk {a.riskPct}%</>}
                   </li>
                 ))}
               </ul>
