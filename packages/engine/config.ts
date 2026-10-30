@@ -53,6 +53,8 @@ export interface Config {
   htfBias: HtfBiasRule;
   /** Longs only from gaps in the DISCOUNT of the H1 dealing range, shorts only from PREMIUM gaps (= the retrace happened). */
   requireZone: boolean;
+  /** A confirmed external swing (ERL) must exist on the same leg and be minErlR away. Off = ignore the ERL rules (the final TP is the target). */
+  requireErl: boolean;
   /** The external swing (ERL) must be at least this many R away, otherwise the setup is skipped. */
   minErlR: number;
 
@@ -100,6 +102,7 @@ export const DEFAULT_CONFIG: Config = {
   requireTrendAlignment: true,
   htfBias: 'narrative',
   requireZone: true,
+  requireErl: true,
   minErlR: 3,
 
   spread: 0.3,
@@ -197,6 +200,8 @@ export const CONFIG_FIELDS: FieldSpec[] = [
     help: 'H1 gaps (steady): short counter-moves do not turn it; it stays until every live H1 gap on its side has been closed through. Last structure break: follows the latest H1 BOS and turns often.' },
   { key: 'requireZone', label: 'Require discount / premium', group: 'Setup rules', stage: 2, type: 'boolean',
     help: 'Longs only from gaps below the H1 EQ, shorts only from gaps above it: the trade waits for the retrace into the right half of the range.' },
+  { key: 'requireErl', label: 'Require an ERL target', group: 'Setup rules', stage: 2, type: 'boolean',
+    help: 'On (normal): the trade needs a confirmed external swing on the same leg, far enough away. Off (test only): that check is skipped, so a gap right next to price can be traded even when the move has already run its course.' },
   { key: 'minErlR', label: 'Min distance to ERL (R)', group: 'Setup rules', stage: 2, type: 'number', min: 0, step: 0.25,
     help: 'Skip the setup if the external swing is closer than this many R. Set it to the final TP so the target is reachable.' },
 

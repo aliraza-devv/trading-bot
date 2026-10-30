@@ -256,6 +256,46 @@ describe('ERL and priority', () => {
   });
 });
 
+describe('rules 7 and 8: requireErl is the (test) switch for the external target', () => {
+  // A short gap 100-102: entry 100, stop 102, 1R = 2. The H1 narrative is bearish, so rule 5 passes.
+  const gap: FVG = {
+    direction: -1, bottom: 100, top: 102, size: 2, ce: 101, idxFirst: 0, idxMid: 1, confirmIdx: 2, time: 0, confirmTime: 0,
+    firstTouchIdx: -1, fillIdx: -1, closeIdx: -1, endIdx: -1, endReason: 'open',
+  };
+  const view = (bias: number, swings: Swing[]): Structure => ({
+    swings, fvgs: [], bos: [],
+    bars: {
+      atr: Float64Array.of(1), trend: Int8Array.of(bias), bias: Int8Array.of(bias), lastSH: Float64Array.of(NaN), lastSL: Float64Array.of(NaN),
+      rangeHigh: Float64Array.of(NaN), rangeLow: Float64Array.of(NaN), eq: Float64Array.of(NaN), pdPct: Float64Array.of(NaN), zone: Int8Array.of(0),
+    },
+  });
+  const low = (idx: number, price: number): Swing => ({ kind: 'low', idx, price, time: 0, confirmIdx: idx + 1, confirmTime: 0 });
+  const run = (swings: Swing[], o: Partial<Config>) =>
+    evaluateSetup(
+      { cand: { tf: 'M15', fvg: gap }, bar: bar(5, 101, 102, 100, 101), k: 5, h1IdxPrev: 0, market: { h1: view(-1, []), m15: view(0, swings) }, equity: 10_000, busy: false },
+      free({ requireZone: false, ...o }),
+    );
+  const erlOf = (r: ReturnType<typeof run>) => (r.ok ? r.setup.poi.erl : r.reason);
+
+  it('normal: no confirmed swing -> no_erl, a swing nearer than minErlR x risk -> erl_too_close, a far one -> trade', () => {
+    expect(erlOf(run([], {}))).toBe('no_erl');
+    expect(erlOf(run([low(3, 99)], {}))).toBe('erl_too_close'); // 1 away, 3R = 6 needed
+    expect(erlOf(run([low(3, 90)], {}))).toBe(90);
+  });
+  it('off: both rules are skipped; the final TP stands in for the ERL when there is no swing', () => {
+    expect(erlOf(run([], { requireErl: false }))).toBe(94); //     100 - 3R x 2
+    expect(erlOf(run([], { requireErl: false, finalTpR: 2 }))).toBe(96);
+    expect(erlOf(run([low(3, 99)], { requireErl: false }))).toBe(99); // too close would have stopped it; the real swing is still shown
+    expect(erlOf(run([low(3, 90)], { requireErl: false }))).toBe(90);
+  });
+  it('off does not switch off any other rule', () => {
+    const o = { requireErl: false };
+    expect(run([], { ...o, htfBias: 'narrative', requireTrendAlignment: true, sessionFilterEnabled: true, sessionWindowsUtc: [['00:00', '01:00']] })).toEqual({ ok: false, reason: 'session' });
+    expect(evaluateSetup({ cand: { tf: 'M15', fvg: gap }, bar: bar(5, 101, 102, 100, 101), k: 5, h1IdxPrev: 0, market: { h1: view(1, []), m15: view(0, []) }, equity: 10_000, busy: false }, free({ requireZone: false, ...o }))).toEqual({ ok: false, reason: 'trend' });
+    expect(evaluateSetup({ cand: { tf: 'M15', fvg: gap }, bar: bar(5, 101, 102, 100, 101), k: 5, h1IdxPrev: 0, market: { h1: view(-1, []), m15: view(0, []) }, equity: 10_000, busy: true }, free({ requireZone: false, ...o }))).toEqual({ ok: false, reason: 'busy' });
+  });
+});
+
 describe('rule 5: the higher timeframe decides which side may be traded', () => {
   const gap = (direction: Direction): FVG => ({
     direction, bottom: 100, top: 102, size: 2, ce: 101, idxFirst: 0, idxMid: 1, confirmIdx: 2, time: 0, confirmTime: 0,

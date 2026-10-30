@@ -50,6 +50,8 @@ A touched gap becomes a trade only if **all** of these hold (each failure is cou
    see below); with `requireZone` the gap is in the H1 *discount* (longs) / *premium* (shorts)
 5. **ERL exists:** a *confirmed* swing after the gap on the same leg: the highest swing high (long) / lowest swing low (short)
 6. the ERL is at least `minErlR` × risk away
+   (`requireErl = false` is a **test switch**: rules 5 and 6 are skipped and the final TP is the target. It lets the bridge use a gap
+   right next to price after a move has run its course, which the normal rules refuse. Leave it on for real evaluation.)
 7. the risk distance sizes to at least `minLot`
 
 H1 gaps are evaluated before M15 gaps (**H1 priority**), and each gap gets exactly **one** chance: the first touch consumes it

@@ -26,6 +26,7 @@
  *   7. ERL exists: a CONFIRMED swing after the gap on the SAME leg (highest
  *      swing high for a long, lowest swing low for a short).                   -> 'no_erl'
  *   8. The ERL is at least minErlR x risk away from the entry.                 -> 'erl_too_close'
+ *      (requireErl off = test switch: rules 7 and 8 are skipped; the final TP is the target.)
  *   9. The risk distance is positive and sizes to at least minLot.             -> 'size'
  *   H1 gaps are evaluated before M15 gaps (H1 priority), and every gap gets exactly ONE chance:
  *   the first touch consumes it whether or not it became a trade.
@@ -177,20 +178,22 @@ export function evaluateSetup(inp: SetupInput, cfg: Config): { ok: true; setup: 
   const structure = tf === 'H1' ? inp.market.h1 : inp.market.m15;
   const tfIdx = tf === 'H1' ? inp.h1IdxPrev : inp.k - 1;
   const erl = findErl(d, fvg, structure.swings, tfIdx); //                                  rule 7
-  if (!erl) return no('no_erl');
+  if (!erl && cfg.requireErl) return no('no_erl');
 
   const level = d === 1 ? fvg.top : fvg.bottom;
   const stop = d === 1 ? fvg.bottom - cfg.slBuffer : fvg.top + cfg.slBuffer;
   const risk = Math.abs(level - stop);
   if (!(risk > 0)) return no('size');
-  if (Math.abs(erl.price - level) < cfg.minErlR * risk) return no('erl_too_close'); //      rule 8
+  if (erl && cfg.requireErl && Math.abs(erl.price - level) < cfg.minErlR * risk) return no('erl_too_close'); // rule 8
 
   const lots = sizePosition(inp.equity, risk, cfg); //                                      rule 9
   if (lots <= 0) return no('size');
 
   const poi: POI = {
     timeframe: tf, direction: d, fvgConfirmIdx: fvg.confirmIdx, fvgTime: fvg.time, confirmTime: fvg.confirmTime,
-    bottom: fvg.bottom, top: fvg.top, erl: erl.price, erlTime: erl.time,
+    bottom: fvg.bottom, top: fvg.top,
+    // requireErl off and no swing found: the final TP stands in for the ERL
+    erl: erl ? erl.price : level + d * cfg.finalTpR * risk, erlTime: erl ? erl.time : fvg.confirmTime,
   };
   return { ok: true, setup: { timeframe: tf, direction: d, poi, level, stop, risk, lots } };
 }
