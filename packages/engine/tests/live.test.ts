@@ -129,6 +129,25 @@ describe('parity with the backtest (random series, 3200 candles)', () => {
   });
 });
 
+describe('a PC clock a little behind the broker (the EA syncs in the first second of a candle)', () => {
+  const c = warm[3].entryIdx - 1;
+  const at0 = decideLive(at(c15, c), state(closeOf(c15, c), 10_000), cfg, MIN);
+
+  it('a candle that closed this second still counts as closed, whatever the PC clock says within a minute', () => {
+    expect(at0.status).toBe('ok');
+    for (const behind of [1_000, 5_000, 30_000, 59_000]) {
+      const d = decideLive(at(c15, c), state(closeOf(c15, c) - behind, 10_000), cfg, MIN);
+      expect(d, `clock ${behind} ms behind`).toEqual(at0);
+    }
+  });
+
+  it('a clock far behind still drops the newest candle, so the data looks old (stale) rather than being traded on', () => {
+    const d = decideLive(at(c15, c), state(closeOf(c15, c) - 90_000, 10_000), cfg, MIN);
+    expect(d.status).toBe('stale');
+    expect(d.asOf).toBe(closeOf(c15, c) - M);
+  });
+});
+
 describe('parity with short-lived gaps (fvgMaxAgeBars = 8): the expiry boundary is exercised', () => {
   const cfgS = busy({ fvgMaxAgeBars: 8 });
   const runS = runBacktest(aggregateToH1(c15, Number.MAX_SAFE_INTEGER), c15, cfgS);

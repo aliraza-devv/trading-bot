@@ -46,6 +46,15 @@ export function keyFromComment(comment: string): string {
   return m ? m[1] : '';
 }
 
+// ---------------------------------------------------------------------------------------------- clocks
+/**
+ * A request is stamped with the PC's clock, the candles carry the broker's. The EA syncs in the first second of a new candle, and
+ * a PC clock only a second behind the broker's then says the candle that just closed has not closed yet: it was dropped, the data
+ * looked 15 minutes old and the robot refused to trade ("stale") at every candle open, with the market open. So a candle counts as
+ * closed when it closes within this much of "now". The EA never sends the candle that is still forming (it copies from bar 1).
+ */
+export const CLOCK_SLACK_MS = 60_000;
+
 // ----------------------------------------------------------------------------------------- test trade
 /**
  * The Live page's "Test trade" button: ONE small market order right now, to prove the whole path (order, fill, partial,
@@ -204,7 +213,7 @@ export function decideLive(input: Candle[], st: LiveState, cfg: Config, opts: Li
   const graceMs = opts.orderGraceMs ?? 120_000;
   const notes: string[] = [];
 
-  const m15 = dropUnclosed(input, M15, st.nowMs); // never trust the caller to have left the forming candle out
+  const m15 = dropUnclosed(input, M15, st.nowMs + CLOCK_SLACK_MS); // never trust the caller to have left the forming candle out
   const asOf = m15.length ? m15[m15.length - 1].time + M15 : 0;
 
   /** Refuse to trade: take every resting order off the book and say why. */

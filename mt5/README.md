@@ -167,6 +167,8 @@ A demo run is worth doing precisely because it shows these:
 | The EA stops at once with an alert | You are on a real-money account. By design it will not run there |
 | Orders rejected: invalid stops | Your broker's minimum stop distance is larger than the setup's; that setup is skipped |
 | Symbol is not `XAUUSD` | Fine: attach the EA to whatever your gold chart is called |
+| Status *stale* with "Newest closed candle is 15 min old" at every candle open, while the chart shows fresh candles | The PC clock is a second or two behind the broker's. Fixed from the commit after 1bfc403 (a candle that closes within a minute of "now" counts as closed). Also turn on **Set time automatically** in Windows |
+| Status *stale* for the first minutes after you start MT5 or the EA | Normal if it was started 10-14 minutes into a candle; it clears at the next quarter-hour. Also normal during gold's daily break (23:00-00:00 broker time, sometimes until 01:00) and at the weekend |
 | Live page says *Built-in defaults* | You never pressed **Use these rules for the MT5 bridge** in the backtester |
 
 The app also keeps a journal of every decision in `web/live-data/decisions.jsonl` (git-ignored), for comparing demo results with the backtest later.
